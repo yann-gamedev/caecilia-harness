@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from caecilia_harness.bootstrap import ProviderNotConfiguredError, build_orchestrator
+from caecilia_harness.artifacts import read_bytes
+from caecilia_harness.bootstrap import ProviderNotConfiguredError, artifact_info, build_orchestrator
 from caecilia_harness.core.models import Action, GateReport, TaskSpec
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import UserPrompter
@@ -62,7 +63,14 @@ def _orchestrator(
 ) -> Orchestrator:
     prompter = prompter or FakePrompter()
     gate = SimpleGate(repo, check, confirm=prompter.confirm_merge, auto_merge=auto_merge)
-    return Orchestrator(store, GitWorktreeBackend(repo), gate, {"fake": worker}, prompter)
+    return Orchestrator(
+        store,
+        GitWorktreeBackend(repo),
+        gate,
+        {"fake": worker},
+        prompter,
+        artifact_info=artifact_info,
+    )
 
 
 def _spec(task_id: str = "t1") -> TaskSpec:
@@ -129,9 +137,10 @@ async def test_happy_path(store: SqliteEventStore, git_repo: Path) -> None:
     assert not (worktrees_dir() / "t1").exists()  # cleaned up after DONE
     [result] = [e for e in store.read_stream("task:t1") if e.type == "worker.result"]
     patch = result.payload["diff"]["patch_ref"]
-    assert store._conn.execute(  # noqa: SLF001
-        "SELECT kind, task_id FROM artifacts WHERE hash = ?", (patch,)
-    ).fetchone() == ("patch", "t1")
+    row = store._conn.execute(
+        "SELECT kind, task_id, bytes FROM artifacts WHERE hash = ?", (patch,)
+    ).fetchone()
+    assert tuple(row) == ("patch", "t1", len(read_bytes(patch)))
 
 
 async def test_failed_check_is_reworked_with_gate_report(
@@ -232,7 +241,7 @@ async def test_outbox_spawn_is_idempotent(
 async def test_rebuild_projections_after_run(store: SqliteEventStore, git_repo: Path) -> None:
     orch = _orchestrator(store, git_repo, FakeWorker(files={"N.md": "n"}))
     await orch.run(_create(orch, git_repo))
-    conn = store._conn  # noqa: SLF001
+    conn = store._conn
     before = [tuple(r) for r in conn.execute("SELECT * FROM tasks ORDER BY id")]
     rebuild_projections(conn)
     assert [tuple(r) for r in conn.execute("SELECT * FROM tasks ORDER BY id")] == before

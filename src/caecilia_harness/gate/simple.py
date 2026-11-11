@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from caecilia_harness.core.models import DiffArtifact, GateReport
+from caecilia_harness.core.ports import BeforeMerge
 from caecilia_harness.paths import worktrees_dir
 from caecilia_harness.security.approval import ApprovalPolicy, ExecRequest
 from caecilia_harness.workspace.exec_runner import ExecRunner
@@ -16,7 +17,6 @@ from caecilia_harness.workspace.git_worktree import HARNESS_IDENTITY, validate_t
 OUTPUT_TAIL_CHARS = 4000
 
 Confirm = Callable[[GateReport], Awaitable[bool]]
-BeforeMerge = Callable[[str, str], Awaitable[None]]
 
 
 async def _never_asked(req: ExecRequest) -> bool:  # pragma: no cover - policy is "allow"
@@ -49,7 +49,14 @@ class SimpleGate:
         # Resolved per instance so CAECILIA_HOME is read at use time, not import time.
         self.root = root if root is not None else worktrees_dir()
 
-    async def check(self, diff: DiffArtifact, target_branch: str) -> GateReport:
+    async def check(
+        self,
+        diff: DiffArtifact,
+        target_branch: str,
+        before_merge: BeforeMerge | None = None,
+    ) -> GateReport:
+        """Integrate `diff`. A per-call `before_merge` overrides the one given at construction."""
+        hook = before_merge if before_merge is not None else self.before_merge
         task_id = diff.task_id
         validate_task_id(task_id)
         if not diff.files_changed:
@@ -65,12 +72,18 @@ class SimpleGate:
             await run_git(
                 ["worktree", "add", "-b", branch, str(path), diff.head_commit], self.repo_path
             )
-            return await self._integrate(diff, target_branch, target_ref, old, path)
+            return await self._integrate(diff, target_branch, target_ref, old, path, hook)
         finally:
             await self._remove_integration(path, branch)
 
     async def _integrate(
-        self, diff: DiffArtifact, target: str, target_ref: str, old: str, path: Path
+        self,
+        diff: DiffArtifact,
+        target: str,
+        target_ref: str,
+        old: str,
+        path: Path,
+        hook: BeforeMerge | None,
     ) -> GateReport:
         task_id = diff.task_id
 
@@ -101,7 +114,7 @@ class SimpleGate:
             return report
 
         new = (await run_git(["rev-parse", "HEAD"], path)).text
-        return await self._fast_forward(report, target, target_ref, old, new)
+        return await self._fast_forward(report, target, target_ref, old, new, hook)
 
     async def _run_check(self, path: Path) -> tuple[bool, str]:
         """Run the user's check command in the rebased tree (scrubbed env, own process group)."""
@@ -124,7 +137,13 @@ class SimpleGate:
         return result.exit_code == 0, output
 
     async def _fast_forward(
-        self, report: GateReport, target: str, target_ref: str, old: str, new: str
+        self,
+        report: GateReport,
+        target: str,
+        target_ref: str,
+        old: str,
+        new: str,
+        hook: BeforeMerge | None,
     ) -> GateReport:
         checkout = await self._checked_out_at(target_ref)
         if checkout is not None:
@@ -141,8 +160,8 @@ class SimpleGate:
                     }
                 )
 
-        if self.before_merge is not None:
-            await self.before_merge(old, new)
+        if hook is not None:
+            await hook(old, new)
 
         if checkout is None:
             moved = await run_git(

@@ -108,6 +108,21 @@ event `done` atau `error`.
 Skema: `src/caecilia_harness/store/schema.sql`. `context_pins` menggerakkan invalidasi: ketika
 `documents.revision` naik, setiap task non-terminal yang mem-pin revisi lama mendapat `task.context_stale`.
 
+## Port dan outbox (M1-10)
+
+- `StateStore.append(events, expect=None, outbox=())`: item outbox masuk di transaksi yang sama dengan
+  event-nya; `idempotency_key` outbox yang sudah ada diabaikan. Query: `get_task`, `list_tasks`,
+  `pending_outbox`, `mark_outbox`, `register_artifact`. Tabel `outbox` dan `artifacts` adalah catatan
+  pengiriman dan metadata, bukan state task, jadi ditulis di luar `append`.
+- `Gate.check(diff, target_branch, before_merge=None)`: `before_merge(old, new)` ditunggu tepat sebelum
+  branch target bergerak; orchestrator memakainya untuk mencatat `gate.merging`.
+- `UserPrompter`: `ask_approval(action)` dan `confirm_merge(report)`; diimplementasikan di `interfaces`.
+- Outbox `spawn_worker` (key `<task>:<attempt>:spawn_worker`) selalu memeriksa ulang state task
+  (masih LEASED dengan attempt yang sama) sebelum membuat worktree dan menjalankan worker.
+- Event tambahan: `gate.merging {old, new}`. Approval exec dicatat di stream `approval:<task>`.
+- Konvensi error worker: `cancelled` → CANCELLED; awalan `transient` → RETRY_WAIT kalau task
+  idempoten dan attempt masih tersisa; selain itu (`budget_exceeded:*`, `provider_error:*`, …) → FAILED.
+
 ## Aturan konkurensi
 
 1. Satu penulis DB: orchestrator. Lease di-insert/CAS di dalam transaksi.
