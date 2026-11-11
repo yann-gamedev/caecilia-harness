@@ -102,8 +102,21 @@ class OutboxItem(Frozen):
 
 class OutboxRecord(OutboxItem):
     id: int
-    status: Literal["pending", "done", "failed"]
+    status: Literal["pending", "done", "failed", "cancelled"]
     attempts: int
+
+
+# --- Leases -----------------------------------------------------------------
+
+
+class Lease(Frozen):
+    """Who may run a task right now. Holder = "<hostname>:<pid>:<boot_id>"."""
+
+    task_id: str
+    holder: str
+    attempt: int
+    expires_at: datetime
+    pid: int | None = None
 
 
 # --- Context ----------------------------------------------------------------

@@ -17,6 +17,7 @@ from caecilia_harness.core.models import (
     DiffArtifact,
     Event,
     GateReport,
+    Lease,
     ModelCaps,
     ModelEvent,
     ModelRequest,
@@ -97,6 +98,10 @@ class Gate(Protocol):
         """
         ...
 
+    async def branch_head(self, branch: str) -> str:
+        """Current commit of `branch` (recovery compares it with a recorded merge)."""
+        ...
+
 
 @runtime_checkable
 class StateStore(Protocol):
@@ -116,8 +121,10 @@ class StateStore(Protocol):
     def get_task(self, task_id: str) -> TaskRow: ...
 
     def list_tasks(
-        self, run_id: str, states: Sequence[TaskState] | None = None
-    ) -> list[TaskRow]: ...
+        self, run_id: str | None, states: Sequence[TaskState] | None = None
+    ) -> list[TaskRow]:
+        """Tasks of `run_id` (all runs if None), optionally filtered by state."""
+        ...
 
     def pending_outbox(self) -> list[OutboxRecord]: ...
 
@@ -126,6 +133,20 @@ class StateStore(Protocol):
     def register_artifact(
         self, hash: str, kind: str, task_id: str | None, path: str, bytes: int
     ) -> None: ...
+
+    def acquire_lease(self, task_id: str, holder: str, attempt: int, ttl_s: float) -> Lease:
+        """Record `task.lease_acquired`; raise if another holder's lease is still active."""
+        ...
+
+    def renew_lease(self, task_id: str, holder: str, ttl_s: float) -> bool:
+        """Extend `holder`'s lease (heartbeat, no event). False if `holder` no longer has it."""
+        ...
+
+    def release_lease(self, task_id: str, holder: str) -> None:
+        """Record `task.lease_released`."""
+        ...
+
+    def list_leases(self) -> list[Lease]: ...
 
     def read_stream(self, stream: str, after: int = 0) -> list[Event]: ...
 

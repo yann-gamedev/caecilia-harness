@@ -76,6 +76,11 @@ class SimpleGate:
         finally:
             await self._remove_integration(path, branch)
 
+    async def branch_head(self, branch: str) -> str:
+        return (
+            await run_git(["rev-parse", "--verify", f"refs/heads/{branch}"], self.repo_path)
+        ).text
+
     async def _integrate(
         self,
         diff: DiffArtifact,
