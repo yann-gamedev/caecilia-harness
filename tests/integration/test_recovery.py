@@ -228,12 +228,12 @@ async def test_leased_by_other_boot_goes_back_to_ready(
     store.append([], outbox=[old_spawn])
 
     orch, _ = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
 
     assert store.get_task("t1").state is S.READY
     assert "task.lease_expired" in _types(store)
     assert store.list_leases() == []
-    status = store._conn.execute(  # noqa: SLF001
+    status = store._conn.execute(
         "SELECT status FROM outbox WHERE idempotency_key = ?", (old_spawn.idempotency_key,)
     ).fetchone()[0]
     assert status == "cancelled"
@@ -252,7 +252,7 @@ async def test_running_with_expired_lease_retries_and_keeps_old_worktree(
     )
 
     orch, _ = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
 
     task = store.get_task("t1")
     assert (task.state, task.attempts) == (S.READY, 1)
@@ -279,7 +279,7 @@ async def test_running_non_idempotent_needs_human_without_respawn(
     crashed.to(S.READY, S.LEASED, S.RUNNING, extra={S.RUNNING: [crashed.started()]})
 
     orch, _ = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.NEEDS_HUMAN
     assert await orch.resume("r1") == "needs_human"
     assert _spawns(spawn_log) == []
@@ -291,7 +291,7 @@ async def test_own_live_lease_is_left_alone(
     Crashed(store, git_repo).to(S.READY)
     orch, _ = _orchestrator(store, git_repo, spawn_log)
     await orch.advance("t1")  # READY -> LEASED under this orchestrator's own lease
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.LEASED
     assert [lease.holder for lease in store.list_leases()] == [orch.holder]
     assert await orch.run("r1") == "done"
@@ -314,7 +314,7 @@ async def test_awaiting_gate_stays_and_gate_runs_on_resume(
     )
 
     orch, gate = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.AWAITING_GATE
     assert await orch.resume("r1") == "done"
     assert gate.calls == 1
@@ -327,7 +327,7 @@ async def test_integrating_without_merging_reruns_gate(
 ) -> None:
     await Crashed(store, git_repo).until_integrating()
     orch, gate = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.INTEGRATING
 
     assert await orch.resume("r1") == "done"
@@ -350,7 +350,7 @@ async def test_merging_already_landed_is_done_without_gate(
     await crashed.until_integrating(merging={"old": base, "new": diff.head_commit})
 
     orch, gate = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
 
     assert store.get_task("t1").state is S.DONE
     assert gate.calls == 0
@@ -367,7 +367,7 @@ async def test_merging_not_landed_reruns_gate(
     assert git(git_repo, "rev-parse", "main") == base  # target still at `old`
 
     orch, gate = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.INTEGRATING
     assert await orch.resume("r1") == "done"
     assert gate.calls == 1
@@ -385,7 +385,7 @@ async def test_merging_with_target_elsewhere_needs_human(
     git(git_repo, "commit", "-q", "-m", "unrelated")
 
     orch, gate = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is S.NEEDS_HUMAN
     assert gate.calls == 0
 
@@ -409,7 +409,7 @@ async def test_waiting_states_are_resumed(
     Crashed(store, git_repo).to(*path)
     expected = path[-1] if path else S.PENDING
     orch, _ = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
     assert store.get_task("t1").state is expected
     assert await orch.resume("r1") == "done"
     assert git(git_repo, "show", "main:NOTES.md") == "notes"
@@ -421,9 +421,9 @@ async def test_rebuild_after_recovery_is_identical(
     crashed = Crashed(store, git_repo)
     crashed.to(S.READY, S.LEASED, S.RUNNING, extra={S.RUNNING: [crashed.started()]})
     orch, _ = _orchestrator(store, git_repo, spawn_log)
-    orch.recover()
+    await orch.recover()
 
-    conn = store._conn  # noqa: SLF001
+    conn = store._conn
     before = [tuple(r) for r in conn.execute("SELECT * FROM tasks ORDER BY id")]
     rebuild_projections(conn)
     assert [tuple(r) for r in conn.execute("SELECT * FROM tasks ORDER BY id")] == before

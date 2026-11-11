@@ -115,10 +115,12 @@ async def test_happy_path(store: SqliteEventStore, git_repo: Path) -> None:
         "task.created",
         "task.state_changed",  # PENDING -> READY
         "task.state_changed",  # READY -> LEASED
+        "task.lease_acquired",
         "worker.started",
         "task.state_changed",  # LEASED -> RUNNING
         "worker.result",
         "task.state_changed",  # RUNNING -> AWAITING_GATE
+        "task.lease_released",
         "task.state_changed",  # AWAITING_GATE -> INTEGRATING
         "gate.started",
         "gate.merging",
