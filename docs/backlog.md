@@ -39,7 +39,7 @@ Checklist:
 - [x] M1-04
 - [x] M1-05
 - [x] M1-06
-- [ ] M1-07
+- [x] M1-07
 - [ ] M1-08
 - [ ] M1-09
 - [ ] M1-10
@@ -97,3 +97,4 @@ Checklist:
 - 2026-11-11 — M1-04 selesai: `CancelFlag`, `FakeProvider` berbasis script, dan contract suite `ModelProviderContract`.
 - 2026-11-11 — M1-05 selesai: artefak content-addressed, `run_git` async, `GitWorktreeBackend` (worktree per task, capture diff termasuk untracked), `DiffArtifact.head_commit`.
 - 2026-11-11 — M1-06 selesai: `scrub_env`, `ApprovalPolicy`, deteksi sandbox bubblewrap, `ExecRunner` (batas worktree, approval, timeout + kill pohon proses, potong output).
+- 2026-11-11 — M1-07 selesai: tool `read_file`/`write_file`/`edit_file`/`list_dir`/`run` untuk native worker, terkurung di worktree dan tanpa akses `.git`.
