@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
 from caecilia_harness.core.clock import Clock, SystemClock
 from caecilia_harness.core.models import (
@@ -121,8 +121,13 @@ class Orchestrator:
         base_commit: str,
         spec: TaskSpec,
         target_branch: str = "main",
+        options: Mapping[str, Any] | None = None,
     ) -> str:
-        """Record a new run with its single task (M1). Returns the run id (`spec.run_id`)."""
+        """Record a new run with its single task (M1). Returns the run id (`spec.run_id`).
+
+        `options` (check command, worker kind, ...) are stored with the run so a later
+        `resume` can rebuild the same orchestrator.
+        """
         run_id = spec.run_id
         run_created = self._event(
             f"run:{run_id}",
@@ -134,6 +139,7 @@ class Orchestrator:
                 "base_commit": base_commit,
                 "target_branch": target_branch,
                 "budget": spec.budget.model_dump(),
+                "options": dict(options or {}),
             },
         )
         task_created = self._event(
@@ -195,6 +201,11 @@ class Orchestrator:
             case state:
                 raise OrchestratorError(f"task {task_id}: no M1 handling for state {state}")
         return self.store.get_task(task_id).state
+
+    async def cancel_all(self, mode: Literal["soft", "hard"]) -> None:
+        """Cancel every worker this process is running (Ctrl+C in the CLI)."""
+        for live in list(self._live.values()):
+            await live.worker.cancel(live.handle, mode)
 
     async def process_outbox(self) -> None:
         """Perform pending side effects. Safe to call again after a crash."""

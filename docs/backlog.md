@@ -44,7 +44,7 @@ Checklist:
 - [x] M1-09
 - [x] M1-10
 - [x] M1-11
-- [ ] M1-12
+- [x] M1-12
 - [ ] M1-13
 - [ ] M1-14
 
@@ -102,3 +102,4 @@ Checklist:
 - 2026-11-11 — M1-09 selesai: `SimpleGate` (integration worktree, rebase + rescue branch, check command ber-env bersih, fast-forward CAS lewat update-ref atau ff-only).
 - 2026-11-11 — M1-10 selesai: `Orchestrator` (run loop satu task, CAS per stream, outbox `spawn_worker`, gate dengan `gate.merging`, rework/retry), `FakeWorker`, `bootstrap.build_orchestrator`; port `Gate.check` kini menerima `before_merge`.
 - 2026-11-11 — M1-11 selesai: `WriterLock`, lease task (acquire/renew/release/expire), heartbeat, `recover()`/`resume()` per state; worktree attempt ke-2 dst. bernama `<task>-<attempt>`; port `Gate.branch_head`.
+- 2026-11-11 — M1-12 selesai: CLI `run`/`resume`/`status`/`runs`, `TerminalPrompter`, fungsi aplikasi di `bootstrap.py`; opsi run disimpan di `run.created` untuk `resume`.

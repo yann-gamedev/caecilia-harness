@@ -233,6 +233,11 @@ class SqliteEventStore:
     def list_leases(self) -> list[Lease]:
         return leases.list_all(self._conn)
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """The underlying connection, for read-only reporting queries in `bootstrap`."""
+        return self._conn
+
     def close(self) -> None:
         """Close the underlying connection."""
         self._conn.close()
