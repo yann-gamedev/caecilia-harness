@@ -9,7 +9,7 @@ Task dengan dependensi yang sama boleh dikerjakan dalam urutan apa pun (misalnya
 ## M0 — Scaffold
 
 - [x] **M0-01 — Scaffold repo, kontrak, guardrail** (dibuat bersama audit v0.2)
-- [ ] **M0-02 — Persiapan repo di laptop** → [prompt 00](prompts/00-persiapan-repo.md)
+- [x] **M0-02 — Persiapan repo di laptop** → [prompt 00](prompts/00-persiapan-repo.md)
   - Dependensi: M0-01
 
 ## M1 — MVP core: satu task end-to-end, tahan crash
@@ -90,3 +90,4 @@ Checklist:
 - 2026-11-10 — M0-01 scaffold dibuat dari audit v0.2.
 - 2026-11-11 — Dokumen diterjemahkan ke Bahasa Indonesia; M1 dipecah menjadi 14 task dengan prompt.
 - 2026-11-11 — Keputusan D10 / ADR-0012: TUI dulu, GUI desktop menyusul sebagai M8 (opsional).
+- 2026-11-11 — M0-02 selesai: CI Windows/Linux dipasang dan pengecekan lokal lulus.
