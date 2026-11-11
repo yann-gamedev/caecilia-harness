@@ -19,3 +19,15 @@ class StreamConflictError(StoreError):
         self.stream = stream
         self.expected = expected
         self.actual = actual
+
+
+class ProjectionError(StoreError):
+    """An event cannot be applied to the projections (e.g. it refers to an unknown task)."""
+
+
+class StaleTaskStateError(ProjectionError):
+    """A task state change was based on an outdated state or revision."""
+
+
+class IllegalTransitionError(ProjectionError):
+    """A task state change is not allowed by `core.states.TRANSITIONS`."""

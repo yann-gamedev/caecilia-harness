@@ -35,7 +35,7 @@ Checklist:
 
 - [x] M1-01
 - [x] M1-02
-- [ ] M1-03
+- [x] M1-03
 - [ ] M1-04
 - [ ] M1-05
 - [ ] M1-06
@@ -93,3 +93,4 @@ Checklist:
 - 2026-11-11 — M0-02 selesai: CI Windows/Linux dipasang dan pengecekan lokal lulus.
 - 2026-11-11 — M1-01 selesai: `store/db.py` membuka SQLite WAL, migrasi skema v1 bertransaksi, koneksi read-only.
 - 2026-11-11 — M1-02 selesai: `SqliteEventStore` dengan append atomik, CAS per stream, idempotency key, dan hook projector.
+- 2026-11-11 — M1-03 selesai: proyeksi `runs`/`tasks`/`task_deps` dari event, validasi transisi dan revisi, `rebuild_projections`.
