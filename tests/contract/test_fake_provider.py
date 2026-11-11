@@ -47,7 +47,9 @@ class TestFakeProviderContract(ModelProviderContract):
 
 def test_satisfies_ports() -> None:
     assert isinstance(FakeProvider([]), ModelProvider)
-    assert isinstance(CancelFlag(), CancelToken)
+    # CancelToken is not runtime_checkable; mypy checks this assignment structurally.
+    token: CancelToken = CancelFlag()
+    assert token.cancelled is False
 
 
 def test_cancel_flag_is_one_way() -> None:
