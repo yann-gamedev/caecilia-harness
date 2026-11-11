@@ -7,17 +7,20 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
+from caecilia_harness.store.errors import MigrationError, StoreError
 from caecilia_harness.store.info import schema_sql
 
+__all__ = [
+    "Migration",
+    "MigrationError",
+    "StoreError",
+    "apply_migrations",
+    "migrations",
+    "open_db",
+    "open_readonly",
+]
+
 Migration = tuple[int, str]
-
-
-class StoreError(Exception):
-    """Base class for every error raised by the store."""
-
-
-class MigrationError(StoreError):
-    """A schema migration failed and was rolled back."""
 
 
 def migrations() -> list[Migration]:

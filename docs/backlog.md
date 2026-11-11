@@ -34,7 +34,7 @@ Task dengan dependensi yang sama boleh dikerjakan dalam urutan apa pun (misalnya
 Checklist:
 
 - [x] M1-01
-- [ ] M1-02
+- [x] M1-02
 - [ ] M1-03
 - [ ] M1-04
 - [ ] M1-05
@@ -92,3 +92,4 @@ Checklist:
 - 2026-11-11 — Keputusan D10 / ADR-0012: TUI dulu, GUI desktop menyusul sebagai M8 (opsional).
 - 2026-11-11 — M0-02 selesai: CI Windows/Linux dipasang dan pengecekan lokal lulus.
 - 2026-11-11 — M1-01 selesai: `store/db.py` membuka SQLite WAL, migrasi skema v1 bertransaksi, koneksi read-only.
+- 2026-11-11 — M1-02 selesai: `SqliteEventStore` dengan append atomik, CAS per stream, idempotency key, dan hook projector.
