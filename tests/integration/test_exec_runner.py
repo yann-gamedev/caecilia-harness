@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -138,8 +139,6 @@ def test_bubblewrap_mounts_tmpfs_before_worktree(tmp_path: Path) -> None:
 
 
 async def test_cancelling_run_kills_the_process_tree(worktree: Path) -> None:
-    import asyncio
-
     runner = _runner(worktree, RecordingApprover(True))
     late = "import time; time.sleep(2); open('late.txt', 'w').close()"
     task = asyncio.create_task(runner.run([PY, "-c", late]))

@@ -162,17 +162,23 @@ class ExecRunner:
         )
         timed_out = False
         try:
-            await asyncio.wait_for(asyncio.shield(proc.wait()), self.timeout_s)
-        except TimeoutError:
-            timed_out = True
-            await _kill_tree(proc)
-        try:
-            stdout, stderr = await asyncio.wait_for(readers, _KILL_GRACE_S)
-        except TimeoutError:
-            # A grandchild escaped the kill and still holds a pipe; give up on its output.
+            try:
+                await asyncio.wait_for(asyncio.shield(proc.wait()), self.timeout_s)
+            except TimeoutError:
+                timed_out = True
+                await _kill_tree(proc)
+            try:
+                stdout, stderr = await asyncio.wait_for(readers, _KILL_GRACE_S)
+            except TimeoutError:
+                # A grandchild escaped the kill and still holds a pipe; give up on its output.
+                readers.cancel()
+                stdout, stderr = b"", b""
+            exit_code = await proc.wait()
+        except asyncio.CancelledError:
+            # The caller was cancelled (e.g. a hard worker cancel): never leave the tree running.
             readers.cancel()
-            stdout, stderr = b"", b""
-        exit_code = await proc.wait()
+            await asyncio.shield(_kill_tree(proc))
+            raise
         return ExecResult(
             exit_code=exit_code,
             stdout_tail=_decode_tail(stdout, self.output_limit),

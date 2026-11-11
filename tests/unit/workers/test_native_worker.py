@@ -186,9 +186,7 @@ async def test_non_retryable_error_fails_at_once(worktree: Path) -> None:
 
 
 async def test_soft_cancel_finishes_the_running_step(worktree: Path) -> None:
-    run = FakeProvider.tool_call(
-        "c1", "run", {"argv": [PY, "-c", "open('ran.txt', 'w').close()"]}
-    )
+    run = FakeProvider.tool_call("c1", "run", {"argv": [PY, "-c", "open('ran.txt', 'w').close()"]})
     provider = FakeProvider([[run, _done("tool_use")], _summary(), _summary()])
     handles: list[RunHandle] = []
 
