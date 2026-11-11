@@ -70,12 +70,40 @@ class TaskSpec(Frozen):
     budget: Budget = Field(default_factory=Budget)
 
 
+class TaskRow(Frozen):
+    """A task as projected in the `tasks` table."""
+
+    id: str
+    run_id: str
+    state: TaskState
+    revision: int
+    attempts: int
+    spec: TaskSpec
+
+
 class TaskStateChange(Frozen):
     task_id: str
     from_state: TaskState
     to_state: TaskState
     revision: int
     reason: str | None = None
+
+
+# --- Outbox -----------------------------------------------------------------
+
+
+class OutboxItem(Frozen):
+    """A side effect to perform after the state change that requested it has committed."""
+
+    idempotency_key: str
+    kind: str  # e.g. "spawn_worker"
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutboxRecord(OutboxItem):
+    id: int
+    status: Literal["pending", "done", "failed"]
+    attempts: int
 
 
 # --- Context ----------------------------------------------------------------

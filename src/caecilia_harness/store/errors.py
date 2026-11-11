@@ -31,3 +31,7 @@ class StaleTaskStateError(ProjectionError):
 
 class IllegalTransitionError(ProjectionError):
     """A task state change is not allowed by `core.states.TRANSITIONS`."""
+
+
+class UnknownTaskError(StoreError, KeyError):
+    """No task with the requested id exists."""

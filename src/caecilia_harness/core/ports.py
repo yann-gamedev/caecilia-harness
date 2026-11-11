@@ -6,7 +6,7 @@ contract test suites in the same change.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Literal, Protocol, runtime_checkable
 
 from caecilia_harness.core.models import (
@@ -21,14 +21,21 @@ from caecilia_harness.core.models import (
     ModelEvent,
     ModelRequest,
     NewEvent,
+    OutboxItem,
+    OutboxRecord,
     Principal,
     RunHandle,
+    TaskRow,
     TaskSpec,
     WorkerCapabilities,
     WorkerEvent,
     WorkerResult,
     Workspace,
 )
+from caecilia_harness.core.states import TaskState
+
+#: Awaited by a gate right before the target branch moves: (old_commit, new_commit).
+BeforeMerge = Callable[[str, str], Awaitable[None]]
 
 
 class CancelToken(Protocol):
@@ -77,22 +84,63 @@ class WorkspaceBackend(Protocol):
 
 @runtime_checkable
 class Gate(Protocol):
-    async def check(self, diff: DiffArtifact, target_branch: str) -> GateReport: ...
+    async def check(
+        self,
+        diff: DiffArtifact,
+        target_branch: str,
+        before_merge: BeforeMerge | None = None,
+    ) -> GateReport:
+        """Integrate `diff` into `target_branch`.
+
+        `before_merge(old, new)` is awaited right before the target moves, so the caller can
+        record which merge is in flight (crash recovery).
+        """
+        ...
 
 
 @runtime_checkable
 class StateStore(Protocol):
     def append(
-        self, events: Sequence[NewEvent], expect: Mapping[str, int] | None = None
+        self,
+        events: Sequence[NewEvent],
+        expect: Mapping[str, int] | None = None,
+        outbox: Sequence[OutboxItem] = (),
     ) -> list[Event]:
-        """Append atomically. `expect` maps stream -> last known stream_seq (CAS)."""
+        """Append atomically. `expect` maps stream -> last known stream_seq (CAS).
+
+        `outbox` items are inserted in the same transaction; an `idempotency_key` that already
+        exists is ignored.
+        """
         ...
+
+    def get_task(self, task_id: str) -> TaskRow: ...
+
+    def list_tasks(
+        self, run_id: str, states: Sequence[TaskState] | None = None
+    ) -> list[TaskRow]: ...
+
+    def pending_outbox(self) -> list[OutboxRecord]: ...
+
+    def mark_outbox(self, outbox_id: int, status: str) -> None: ...
+
+    def register_artifact(
+        self, hash: str, kind: str, task_id: str | None, path: str, bytes: int
+    ) -> None: ...
 
     def read_stream(self, stream: str, after: int = 0) -> list[Event]: ...
 
     def cas_document(self, doc_id: str, expected_revision: int, content_ref: str) -> int:
         """Return the new revision, or raise if `expected_revision` is stale."""
         ...
+
+
+@runtime_checkable
+class UserPrompter(Protocol):
+    """How the orchestrator asks a person (terminal in M1, TUI/GUI later)."""
+
+    async def ask_approval(self, action: Action) -> bool: ...
+
+    async def confirm_merge(self, report: GateReport) -> bool: ...
 
 
 @runtime_checkable

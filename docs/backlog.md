@@ -42,7 +42,7 @@ Checklist:
 - [x] M1-07
 - [x] M1-08
 - [x] M1-09
-- [ ] M1-10
+- [x] M1-10
 - [ ] M1-11
 - [ ] M1-12
 - [ ] M1-13
@@ -100,3 +100,4 @@ Checklist:
 - 2026-11-11 — M1-07 selesai: tool `read_file`/`write_file`/`edit_file`/`list_dir`/`run` untuk native worker, terkurung di worktree dan tanpa akses `.git`.
 - 2026-11-11 — M1-08 selesai: `NativeWorker` (loop model/tool, budget, retry, cancel soft/hard, event buffer), `ToolCall` di `Message`; exec yang dibatalkan kini ikut dimatikan.
 - 2026-11-11 — M1-09 selesai: `SimpleGate` (integration worktree, rebase + rescue branch, check command ber-env bersih, fast-forward CAS lewat update-ref atau ff-only).
+- 2026-11-11 — M1-10 selesai: `Orchestrator` (run loop satu task, CAS per stream, outbox `spawn_worker`, gate dengan `gate.merging`, rework/retry), `FakeWorker`, `bootstrap.build_orchestrator`; port `Gate.check` kini menerima `before_merge`.
