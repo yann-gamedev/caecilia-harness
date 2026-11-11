@@ -171,10 +171,22 @@ class ModelCaps(Frozen):
     max_output_tokens: int
 
 
+class ToolCall(Frozen):
+    """A tool invocation requested by the model."""
+
+    id: str
+    name: str
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
 class Message(Frozen):
+    """A chat message. `assistant` messages may carry `tool_calls`; each `tool` message answers
+    one of them via `tool_call_id`."""
+
     role: Literal["system", "user", "assistant", "tool"]
     content: str
     tool_call_id: str | None = None
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class ToolSpec(Frozen):
