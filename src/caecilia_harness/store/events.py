@@ -8,9 +8,11 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 
+from caecilia_harness.core.clock import Clock, SystemClock
 from caecilia_harness.core.models import (
     Actor,
     Event,
+    Lease,
     NewEvent,
     OutboxItem,
     OutboxRecord,
@@ -18,6 +20,7 @@ from caecilia_harness.core.models import (
     TaskSpec,
 )
 from caecilia_harness.core.states import TaskState
+from caecilia_harness.store import leases
 from caecilia_harness.store.errors import StoreError, StreamConflictError, UnknownTaskError
 
 Projector = Callable[[sqlite3.Connection, Event], None]
@@ -28,7 +31,8 @@ _COLUMNS = (
 )
 
 _TASK_SELECT = "SELECT id, run_id, state, revision, attempts, spec_json FROM tasks"
-_OUTBOX_STATUSES = frozenset({"pending", "done", "failed"})
+_OUTBOX_STATUSES = frozenset({"pending", "done", "failed", "cancelled"})
+_STORE_ACTOR = Actor(kind="orchestrator", id="store")
 
 
 def _row_to_task(row: sqlite3.Row) -> TaskRow:
@@ -67,9 +71,16 @@ class SqliteEventStore:
     class manages its own `BEGIN IMMEDIATE` transactions.
     """
 
-    def __init__(self, conn: sqlite3.Connection, projectors: Sequence[Projector] = ()) -> None:
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        projectors: Sequence[Projector] = (),
+        clock: Clock | None = None,
+    ) -> None:
         self._conn = conn
-        self._projectors = tuple(projectors)
+        self._clock: Clock = clock or SystemClock()
+        # The lease projector is always on: lease methods below rely on it.
+        self._projectors = (leases.make_lease_projector(self._clock), *projectors)
 
     def append(
         self,
@@ -146,11 +157,15 @@ class SqliteEventStore:
             raise UnknownTaskError(task_id)
         return _row_to_task(row)
 
-    def list_tasks(self, run_id: str, states: Sequence[TaskState] | None = None) -> list[TaskRow]:
-        rows = self._conn.execute(
-            f"{_TASK_SELECT} WHERE run_id = ? ORDER BY rowid",
-            (run_id,),
-        ).fetchall()
+    def list_tasks(
+        self, run_id: str | None, states: Sequence[TaskState] | None = None
+    ) -> list[TaskRow]:
+        if run_id is None:
+            rows = self._conn.execute(f"{_TASK_SELECT} ORDER BY rowid").fetchall()
+        else:
+            rows = self._conn.execute(
+                f"{_TASK_SELECT} WHERE run_id = ? ORDER BY rowid", (run_id,)
+            ).fetchall()
         tasks = [_row_to_task(row) for row in rows]
         return tasks if states is None else [t for t in tasks if t.state in set(states)]
 
@@ -199,6 +214,24 @@ class SqliteEventStore:
             "VALUES (?, ?, ?, ?, ?)",
             (hash, kind, task_id, path, bytes),
         )
+
+    # --- leases ------------------------------------------------------------------------------
+
+    def acquire_lease(self, task_id: str, holder: str, attempt: int, ttl_s: float) -> Lease:
+        expires_at = leases.expiry(self._clock, ttl_s)
+        self.append(
+            [leases.lease_acquired_event(task_id, holder, attempt, expires_at, _STORE_ACTOR)]
+        )
+        return next(lease for lease in self.list_leases() if lease.task_id == task_id)
+
+    def renew_lease(self, task_id: str, holder: str, ttl_s: float) -> bool:
+        return leases.renew(self._conn, task_id, holder, leases.expiry(self._clock, ttl_s))
+
+    def release_lease(self, task_id: str, holder: str) -> None:
+        self.append([leases.lease_released_event(task_id, holder, _STORE_ACTOR)])
+
+    def list_leases(self) -> list[Lease]:
+        return leases.list_all(self._conn)
 
     def close(self) -> None:
         """Close the underlying connection."""

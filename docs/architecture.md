@@ -123,6 +123,20 @@ Skema: `src/caecilia_harness/store/schema.sql`. `context_pins` menggerakkan inva
 - Konvensi error worker: `cancelled` → CANCELLED; awalan `transient` → RETRY_WAIT kalau task
   idempoten dan attempt masih tersisa; selain itu (`budget_exceeded:*`, `provider_error:*`, …) → FAILED.
 
+## Lease dan recovery (M1-11)
+
+- Satu penulis: `bootstrap` mengambil `WriterLock` pada `CAECILIA_HOME/harness.lock` sebelum membuka DB.
+- Lease task (`leases`) dijaga dari event `task.lease_acquired` / `task.lease_released` /
+  `task.lease_expired` di transaksi append yang sama. Holder = `<hostname>:<pid>:<boot_id>`.
+  Heartbeat (`renew_lease`, tiap `ttl/3`) hanya memperbarui `expires_at`, tanpa event.
+- Key outbox `spawn_worker` memuat revisi LEASED (`<task>:<attempt>:r<rev>:spawn_worker`), supaya
+  lease baru setelah recovery tidak bertabrakan dengan item lama yang ditandai `cancelled`.
+- Worktree: attempt 1 memakai `<task_id>`, attempt berikutnya `<task_id>-<attempt>`, karena worktree
+  attempt yang crash dipertahankan untuk diperiksa.
+- `Gate.branch_head(branch)` dipakai recovery untuk membandingkan target dengan `gate.merging {old, new}`.
+- `Orchestrator.recover()` (async) dijalankan sebelum `resume()`; aturannya mengikuti tabel di
+  `docs/prompts/11-lease-recovery.md`.
+
 ## Aturan konkurensi
 
 1. Satu penulis DB: orchestrator. Lease di-insert/CAS di dalam transaksi.

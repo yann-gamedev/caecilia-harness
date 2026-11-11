@@ -2,17 +2,26 @@
 
 Every state change is an event appended with a per-stream CAS (`expect`). Side effects that must
 not be repeated (spawning a worker) go through the transactional outbox and re-check the task
-state before acting, so processing an outbox item twice is harmless.
+state before acting, so processing an outbox item twice is harmless. A task is only run under a
+lease held by this process (`holder`); after a crash `recover()` brings every task back to a
+consistent state before `resume()` continues (docs/architecture.md, M1-11).
 
 Depends only on `core` (ports, models, states); concrete adapters are wired in `bootstrap.py`.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import os
+import socket
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
+from caecilia_harness.core.clock import Clock, SystemClock
 from caecilia_harness.core.models import (
     Action,
     Actor,
@@ -20,6 +29,7 @@ from caecilia_harness.core.models import (
     DiffArtifact,
     Event,
     GateReport,
+    Lease,
     NewEvent,
     OutboxItem,
     RunHandle,
@@ -39,10 +49,10 @@ from caecilia_harness.core.ports import (
 from caecilia_harness.core.states import TERMINAL, TaskState
 
 S = TaskState
-ACTOR = Actor(kind="orchestrator", id="orchestrator")
 SPAWN_WORKER = "spawn_worker"
 #: States where `run()` stops driving a task: terminal, or waiting for a person.
 STOP_STATES = TERMINAL | {S.NEEDS_HUMAN}
+DEFAULT_LEASE_TTL_S = 30.0
 
 #: hash -> (path, size in bytes); provided by bootstrap so core never touches the filesystem.
 ArtifactInfo = Callable[[str], tuple[str, int]]
@@ -75,6 +85,8 @@ class Orchestrator:
         max_attempts: int = 3,
         artifact_info: ArtifactInfo | None = None,
         closers: Sequence[Callable[[], None]] = (),
+        clock: Clock | None = None,
+        lease_ttl_s: float = DEFAULT_LEASE_TTL_S,
     ) -> None:
         self.store = store
         self.workspace = workspace
@@ -83,13 +95,19 @@ class Orchestrator:
         self.prompter = prompter
         self.max_attempts = max_attempts
         self.artifact_info = artifact_info
+        self.clock: Clock = clock or SystemClock()
+        self.lease_ttl_s = lease_ttl_s
+        #: New per orchestrator start; leases from any other boot belong to a dead process.
+        self.boot_id = uuid.uuid4().hex
+        self.holder = f"{socket.gethostname()}:{os.getpid()}:{self.boot_id}"
+        self.actor = Actor(kind="orchestrator", id=self.boot_id)
         self._closers = list(closers)
         self._stream_seq: dict[str, int] = {}
         self._live: dict[str, _Live] = {}
         self._workspaces: dict[str, Workspace] = {}
 
     def close(self) -> None:
-        """Release resources handed over by bootstrap (e.g. the DB connection)."""
+        """Release resources handed over by bootstrap (DB connection, writer lock)."""
         for close in self._closers:
             close()
         self._closers.clear()
@@ -145,6 +163,11 @@ class Orchestrator:
         )
         return status
 
+    async def resume(self, run_id: str) -> str:
+        """Recover after a crash, then continue the run from its current state."""
+        await self.recover()
+        return await self.run(run_id)
+
     async def advance(self, task_id: str) -> TaskState:
         """Perform exactly one step for the task and return its new state."""
         task = self.store.get_task(task_id)
@@ -153,13 +176,7 @@ class Orchestrator:
                 # M1 runs have a single task, so there are no blockers to wait for.
                 self._transition(task, S.READY, "no blockers")
             case S.READY:
-                attempt = task.attempts + 1
-                spawn = OutboxItem(
-                    idempotency_key=f"{task.id}:{attempt}:{SPAWN_WORKER}",
-                    kind=SPAWN_WORKER,
-                    payload={"task_id": task.id, "attempt": attempt},
-                )
-                self._transition(task, S.LEASED, f"attempt {attempt}", outbox=[spawn])
+                self._lease_and_spawn(task)
             case S.LEASED:
                 await self.process_outbox()
                 if self.store.get_task(task_id).state is S.LEASED:
@@ -168,7 +185,8 @@ class Orchestrator:
                 await self._collect_worker(task)
             case S.RETRY_WAIT:
                 self._transition(task, S.READY, "retrying")  # M1: no backoff delay
-            case S.AWAITING_GATE:
+            case S.AWAITING_GATE | S.INTEGRATING:
+                # INTEGRATING is only seen here after recovery: the gate is simply run again.
                 await self._integrate(task)
             case S.REWORK:
                 self._transition(task, S.READY, "rework with gate report")
@@ -185,7 +203,11 @@ class Orchestrator:
                 self.store.mark_outbox(item.id, "failed")
                 continue
             try:
-                await self._spawn(str(item.payload["task_id"]), int(item.payload["attempt"]))
+                await self._spawn(
+                    str(item.payload["task_id"]),
+                    int(item.payload["attempt"]),
+                    int(item.payload.get("revision", -1)),
+                )
             except Exception:
                 self.store.mark_outbox(item.id, "failed")
                 raise
@@ -210,20 +232,126 @@ class Orchestrator:
         )
         return allowed
 
+    # --- recovery ------------------------------------------------------------------------------
+
+    async def recover(self) -> None:
+        """Bring tasks left by a crashed orchestrator back to a consistent state.
+
+        Called once at start, before `run`/`resume`. Only leases held by this very process are
+        trusted; any other (older boot, or expired) means its worker is gone.
+        """
+        leases = {lease.task_id: lease for lease in self.store.list_leases()}
+        for task in self.store.list_tasks(None):
+            if task.state in (S.LEASED, S.RUNNING):
+                lease = leases.get(task.id)
+                if lease is None or not self._is_own_live(lease):
+                    self._recover_orphan(task, lease)
+            elif task.state is S.INTEGRATING:
+                await self._recover_integrating(task)
+            # AWAITING_GATE, READY, PENDING, RETRY_WAIT, REWORK: resume picks them up as-is.
+
+    def _is_own_live(self, lease: Lease) -> bool:
+        return lease.holder == self.holder and lease.expires_at > self.clock.now()
+
+    def _recover_orphan(self, task: TaskRow, lease: Lease | None) -> None:
+        for item in self.store.pending_outbox():
+            if item.kind == SPAWN_WORKER and item.payload.get("task_id") == task.id:
+                self.store.mark_outbox(item.id, "cancelled")
+        kept = self._workspace_for(task.id)
+        expired = self._event(
+            f"task:{task.id}",
+            "task.lease_expired",
+            {
+                "task_id": task.id,
+                "holder": lease.holder if lease else None,
+                # The dead attempt's worktree stays on disk for inspection (keep=True).
+                "kept_workspace": kept.path if kept else None,
+            },
+        )
+        self._workspaces.pop(task.id, None)
+        task = self._transition(task, S.RECOVERING, "lease lost after crash", before=[expired])
+        if task.spec.idempotent and task.attempts < self.max_attempts:
+            self._transition(task, S.READY, "idempotent task, safe to run again")
+        else:
+            reason = (
+                "non-idempotent task interrupted: side effects unknown"
+                if not task.spec.idempotent
+                else "attempts exhausted"
+            )
+            self._transition(task, S.NEEDS_HUMAN, reason)
+
+    async def _recover_integrating(self, task: TaskRow) -> None:
+        merging = self._merging_since_last_gate_start(task.id)
+        if merging is None:
+            return  # crashed before the merge started: resume runs the gate again
+        run = self._run_info(task.run_id)
+        head = await self.gate.branch_head(str(run["target_branch"]))
+        if head == merging["new"]:
+            passed = self._event(
+                f"task:{task.id}",
+                "gate.passed",
+                {"report": None, "recovered": True, "merged_commit": merging["new"]},
+            )
+            self._transition(task, S.DONE, "merge had landed before the crash", before=[passed])
+            await self._discard_workspace(task.id)
+        elif head == merging["old"]:
+            return  # merge never happened: resume runs the gate again
+        else:
+            self._transition(
+                task,
+                S.NEEDS_HUMAN,
+                f"target moved to {head} during an interrupted merge "
+                f"({merging['old']} -> {merging['new']})",
+            )
+
+    def _merging_since_last_gate_start(self, task_id: str) -> dict[str, Any] | None:
+        merging: dict[str, Any] | None = None
+        for event in self.store.read_stream(f"task:{task_id}"):
+            if event.type == "gate.started":
+                merging = None
+            elif event.type == "gate.merging":
+                merging = event.payload
+        return merging
+
     # --- steps ---------------------------------------------------------------------------------
 
-    async def _spawn(self, task_id: str, attempt: int) -> None:
+    def _lease_and_spawn(self, task: TaskRow) -> None:
+        attempt = task.attempts + 1
+        revision = task.revision + 1  # the LEASED revision: unique per lease, even on retries
+        spawn = OutboxItem(
+            idempotency_key=f"{task.id}:{attempt}:r{revision}:{SPAWN_WORKER}",
+            kind=SPAWN_WORKER,
+            payload={"task_id": task.id, "attempt": attempt, "revision": revision},
+        )
+        acquired = self._event(
+            f"task:{task.id}",
+            "task.lease_acquired",
+            {
+                "task_id": task.id,
+                "holder": self.holder,
+                "attempt": attempt,
+                "pid": os.getpid(),
+                "expires_at": self._expiry().isoformat(),
+            },
+        )
+        self._transition(task, S.LEASED, f"attempt {attempt}", after=[acquired], outbox=[spawn])
+
+    async def _spawn(self, task_id: str, attempt: int, revision: int) -> None:
         task = self.store.get_task(task_id)
         # Re-check before acting: the item may be replayed after it already took effect.
         if task.state is not S.LEASED or task.attempts + 1 != attempt:
+            return
+        if revision >= 0 and task.revision != revision:
             return
         worker = self.workers.get(task.spec.worker)
         if worker is None:
             self._give_up_spawn(task, f"no worker named {task.spec.worker!r}")
             return
         run = self._run_info(task.run_id)
+        # Later attempts get their own worktree: an earlier one may be kept after a crash.
+        workspace_id = task.id if attempt == 1 else f"{task.id}-{attempt}"
         try:
-            ws = await self.workspace.create(task.id, str(run["base_commit"]))
+            ws = await self.workspace.create(workspace_id, str(run["base_commit"]))
         except Exception as exc:
             self._give_up_spawn(task, f"workspace creation failed: {exc}")
             return
@@ -234,59 +362,102 @@ class Orchestrator:
         started = self._event(
             f"task:{task.id}",
             "worker.started",
-            {"worker": handle.worker, "attempt": attempt, "path": ws.path, "branch": ws.branch},
+            {
+                "worker": handle.worker,
+                "attempt": attempt,
+                "workspace_id": ws.task_id,
+                "path": ws.path,
+                "branch": ws.branch,
+                "base_commit": ws.base_commit,
+            },
         )
         self._transition(task, S.RUNNING, f"worker {handle.worker} started", before=[started])
 
     def _give_up_spawn(self, task: TaskRow, reason: str) -> None:
         # LEASED cannot go to NEEDS_HUMAN directly; RECOVERING is the sanctioned path.
-        task = self._transition(task, S.RECOVERING, reason)
+        task = self._transition(task, S.RECOVERING, reason, after=[self._released(task.id)])
         self._transition(task, S.NEEDS_HUMAN, reason)
 
     async def _collect_worker(self, task: TaskRow) -> None:
         live = self._live.get(task.id)
         if live is None:
             raise OrchestratorError(
-                f"task {task.id} is RUNNING without a live worker (crash recovery is M1-11)"
+                f"task {task.id} is RUNNING without a live worker; restart with resume()"
             )
-        async for event in live.worker.events(live.handle):
-            # ADR-0011: only durable facts are stored; usage is the one M1 records.
-            if event.durable and event.kind == "usage":
-                self._append_task(
-                    task.id, [self._event(f"task:{task.id}", "usage.recorded", event.data)]
-                )
-        result = await live.worker.result(live.handle)
+        heartbeat = asyncio.create_task(self._heartbeat(task.id))
+        try:
+            async for event in live.worker.events(live.handle):
+                # ADR-0011: only durable facts are stored; usage is the one M1 records.
+                if event.durable and event.kind == "usage":
+                    self._append_task(
+                        task.id, [self._event(f"task:{task.id}", "usage.recorded", event.data)]
+                    )
+            result = await live.worker.result(live.handle)
+        finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
         del self._live[task.id]
         task = self.store.get_task(task.id)
+        released = self._released(task.id)
 
         if result.success:
             ws = self._workspaces[task.id]
             diff = await self.workspace.capture_diff(ws)
-            self._register_patch(diff)
+            self._register_patch(task.id, diff)
             self._transition(
-                task, S.AWAITING_GATE, "worker succeeded", before=[self._result(task, result, diff)]
+                task,
+                S.AWAITING_GATE,
+                "worker succeeded",
+                before=[self._result(task, result, diff)],
+                after=[released],
             )
             return
 
         before = [self._result(task, result, None)]
         if result.error == "cancelled":
-            self._transition(task, S.CANCELLED, "worker cancelled", before=before)
+            self._transition(task, S.CANCELLED, "worker cancelled", before=before, after=[released])
         elif (
             _is_transient(result.error)
             and task.spec.idempotent
             and task.attempts < self.max_attempts
         ):
             await self._discard_workspace(task.id)
-            self._transition(task, S.RETRY_WAIT, f"transient error: {result.error}", before=before)
+            self._transition(
+                task,
+                S.RETRY_WAIT,
+                f"transient error: {result.error}",
+                before=before,
+                after=[released],
+            )
         else:
             # The worktree is kept for inspection.
-            self._transition(task, S.FAILED, f"worker failed: {result.error}", before=before)
+            self._transition(
+                task, S.FAILED, f"worker failed: {result.error}", before=before, after=[released]
+            )
+
+    async def _heartbeat(self, task_id: str) -> None:
+        """Keep this process's lease alive while the worker runs (every ttl/3)."""
+        while True:
+            await asyncio.sleep(self.lease_ttl_s / 3)
+            self.store.renew_lease(task_id, self.holder, self.lease_ttl_s)
 
     async def _integrate(self, task: TaskRow) -> None:
         diff = self._last_diff(task.id)
         run = self._run_info(task.run_id)
-        started = self._event(f"task:{task.id}", "gate.started", {"attempt": task.attempts})
-        task = self._transition(task, S.INTEGRATING, "gate started", after=[started])
+        if task.state is S.AWAITING_GATE:
+            started = self._event(f"task:{task.id}", "gate.started", {"attempt": task.attempts})
+            task = self._transition(task, S.INTEGRATING, "gate started", after=[started])
+        else:
+            # Re-running the gate after a crash: INTEGRATING -> INTEGRATING is not a transition,
+            # so only a second gate.started is recorded, unique to this boot.
+            again = self._event(
+                f"task:{task.id}",
+                "gate.started",
+                {"attempt": task.attempts, "rerun_after_recovery": True},
+                idempotency_key=f"{task.id}:r{task.revision}:gate:{self.boot_id}",
+            )
+            self._append_task(task.id, [again])
 
         async def record_merging(old: str, new: str) -> None:
             self._append_task(
@@ -323,10 +494,24 @@ class Orchestrator:
         type_: str,
         payload: dict[str, Any],
         causation_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> NewEvent:
         return NewEvent(
-            stream=stream, type=type_, actor=ACTOR, payload=payload, causation_id=causation_id
+            stream=stream,
+            type=type_,
+            actor=self.actor,
+            payload=payload,
+            causation_id=causation_id,
+            idempotency_key=idempotency_key,
         )
+
+    def _released(self, task_id: str) -> NewEvent:
+        return self._event(
+            f"task:{task_id}", "task.lease_released", {"task_id": task_id, "holder": self.holder}
+        )
+
+    def _expiry(self) -> datetime:
+        return self.clock.now() + timedelta(seconds=self.lease_ttl_s)
 
     def _transition(
         self,
@@ -404,13 +589,29 @@ class Orchestrator:
                 )
         return notes
 
-    def _register_patch(self, diff: DiffArtifact) -> None:
+    def _register_patch(self, task_id: str, diff: DiffArtifact) -> None:
         path, size = (
             self.artifact_info(diff.patch_ref) if self.artifact_info else (diff.patch_ref, 0)
         )
-        self.store.register_artifact(diff.patch_ref, "patch", diff.task_id, path, size)
+        self.store.register_artifact(diff.patch_ref, "patch", task_id, path, size)
+
+    def _workspace_for(self, task_id: str) -> Workspace | None:
+        """The task's current worktree: from memory, or from the last `worker.started` event."""
+        if task_id in self._workspaces:
+            return self._workspaces[task_id]
+        for event in reversed(self.store.read_stream(f"task:{task_id}")):
+            if event.type == "worker.started" and "workspace_id" in event.payload:
+                p = event.payload
+                return Workspace(
+                    task_id=p["workspace_id"],
+                    path=p["path"],
+                    branch=p["branch"],
+                    base_commit=p["base_commit"],
+                )
+        return None
 
     async def _discard_workspace(self, task_id: str) -> None:
-        ws = self._workspaces.pop(task_id, None)
+        ws = self._workspace_for(task_id)
+        self._workspaces.pop(task_id, None)
         if ws is not None:
             await self.workspace.cleanup(ws, keep=False)

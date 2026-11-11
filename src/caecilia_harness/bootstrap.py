@@ -14,10 +14,11 @@ from caecilia_harness.core.models import Action
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import UserPrompter
 from caecilia_harness.gate.simple import SimpleGate
-from caecilia_harness.paths import db_path
+from caecilia_harness.paths import db_path, harness_home
 from caecilia_harness.security.approval import Approver, ExecRequest
 from caecilia_harness.store.db import open_db
 from caecilia_harness.store.events import SqliteEventStore
+from caecilia_harness.store.lock import WriterLock
 from caecilia_harness.store.projections import project_runs_and_tasks
 from caecilia_harness.workers.fake import FakeWorker
 from caecilia_harness.workspace.git_worktree import GitWorktreeBackend
@@ -59,6 +60,7 @@ def build_orchestrator(
 ) -> Orchestrator:
     """Assemble store, workspace backend, gate and worker. Call `close()` on the result.
 
+    Takes the single-writer lock first: a second orchestrator fails with `WriterLockedError`.
     `unsafe_no_sandbox` only matters for the native worker's exec runner (prompt 14).
     """
     if worker_kind == "native":
@@ -66,7 +68,13 @@ def build_orchestrator(
             "the native worker needs a model provider, which has not been chosen yet "
             "(open decision D2 in docs/decisions-open.md); use --worker fake for now"
         )
-    conn = open_db(db_path())
+    lock = WriterLock(harness_home() / "harness.lock")
+    lock.acquire()
+    try:
+        conn = open_db(db_path())
+    except BaseException:
+        lock.release()
+        raise
     try:
         store = SqliteEventStore(conn, projectors=[project_runs_and_tasks])
         gate = SimpleGate(
@@ -79,8 +87,9 @@ def build_orchestrator(
             {"fake": FakeWorker()},
             prompter,
             artifact_info=artifact_info,
-            closers=[conn.close],
+            closers=[conn.close, lock.release],
         )
     except BaseException:
         conn.close()
+        lock.release()
         raise
