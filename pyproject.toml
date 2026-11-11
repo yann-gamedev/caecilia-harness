@@ -1,0 +1,107 @@
+[project]
+name = "caecilia-harness"
+version = "0.0.1"
+description = "AI orchestration harness: versioned task graphs, parallel isolated workers, integration gate."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+tui = ["textual>=0.80"]
+
+[project.scripts]
+caecilia = "caecilia_harness.interfaces.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "import-linter>=2.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/caecilia_harness"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "SIM", "RUF"]
+# S603: subprocess with argument lists is the required pattern here (see AGENTS.md).
+ignore = ["S603"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: long-running test",
+    "chaos: process-kill / failure-injection test",
+    "linux_only: requires Linux (e.g. bubblewrap)",
+]
+
+# Module boundaries from docs/architecture.md. Run with `lint-imports`.
+[tool.importlinter]
+root_package = "caecilia_harness"
+
+[[tool.importlinter.contracts]]
+name = "core depends on no other internal package"
+type = "forbidden"
+source_modules = ["caecilia_harness.core"]
+forbidden_modules = [
+    "caecilia_harness.store",
+    "caecilia_harness.providers",
+    "caecilia_harness.workers",
+    "caecilia_harness.workspace",
+    "caecilia_harness.gate",
+    "caecilia_harness.context",
+    "caecilia_harness.extensions",
+    "caecilia_harness.security",
+    "caecilia_harness.interfaces",
+    "caecilia_harness.telemetry",
+]
+
+[[tool.importlinter.contracts]]
+name = "nothing imports the user interfaces"
+type = "forbidden"
+source_modules = [
+    "caecilia_harness.core",
+    "caecilia_harness.store",
+    "caecilia_harness.providers",
+    "caecilia_harness.workers",
+    "caecilia_harness.workspace",
+    "caecilia_harness.gate",
+    "caecilia_harness.context",
+    "caecilia_harness.extensions",
+    "caecilia_harness.security",
+    "caecilia_harness.telemetry",
+]
+forbidden_modules = ["caecilia_harness.interfaces"]
+
+[[tool.importlinter.contracts]]
+name = "workers do not touch the store directly"
+type = "forbidden"
+source_modules = ["caecilia_harness.workers"]
+forbidden_modules = ["caecilia_harness.store"]

@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.hypothesis/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Runtime data (normally under ~/.caecilia, but never commit it if redirected here)
+.caecilia/
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local agent instructions and config
+AGENT.md
+AGENTS.md
+GEMINI
+GEMINI.md
+CLAUDE
+CLAUDE.md
+.agents/
+.claude/
+
+# Local task prompts
+/docs/prompts/
