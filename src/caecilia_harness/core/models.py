@@ -190,6 +190,19 @@ class ModelRequest(Frozen):
 
 
 class ModelEvent(Frozen):
+    """One streamed provider event (docs/architecture.md, "Kontrak `ModelEvent`").
+
+    Shape of `data` per `kind`:
+
+    - `text_delta`: `{"text": str}`
+    - `tool_call`: `{"id": str, "name": str, "input": dict}`
+    - `usage`: `{"input_tokens": int, "output_tokens": int}`
+    - `done`: `{"stop_reason": "end_turn" | "tool_use" | "max_tokens" | "cancelled"}`
+    - `error`: `{"message": str, "retryable": bool}`
+
+    A stream always ends with exactly one `done` or `error` event.
+    """
+
     kind: Literal["text_delta", "tool_call", "usage", "done", "error"]
     data: dict[str, Any] = Field(default_factory=dict)
 
