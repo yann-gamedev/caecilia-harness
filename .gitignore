@@ -42,3 +42,6 @@ CLAUDE.md
 
 # Local task prompts
 /docs/prompts/
+
+# CI config stays local only (owner decision 2026-11-11)
+.github/
