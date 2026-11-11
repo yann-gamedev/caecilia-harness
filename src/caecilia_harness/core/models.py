@@ -108,6 +108,7 @@ class Workspace(Frozen):
 class DiffArtifact(Frozen):
     task_id: str
     base_commit: str
+    head_commit: str  # commit holding the task's changes; equals base_commit if none
     patch_ref: str  # artifact hash of the patch
     files_changed: list[str]
     includes_untracked: bool = True
