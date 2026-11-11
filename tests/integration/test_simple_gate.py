@@ -50,7 +50,9 @@ def _gate(repo: Path, check: list[str] = PASS, **kw: object) -> SimpleGate:
 
 def _leftovers(repo: Path) -> list[str]:
     branches = git(repo, "branch", "--list", "caecilia/integrate/*")
-    worktrees = [line for line in git(repo, "worktree", "list").splitlines() if "_integrate" in line]
+    worktrees = [
+        line for line in git(repo, "worktree", "list").splitlines() if "_integrate" in line
+    ]
     return [b for b in branches.splitlines() if b.strip()] + worktrees
 
 

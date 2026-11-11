@@ -11,7 +11,7 @@ from caecilia_harness.paths import worktrees_dir
 from caecilia_harness.workspace.git import run_git
 
 _TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
-_HARNESS_IDENTITY = ["-c", "user.name=caecilia-harness", "-c", "user.email=harness@localhost"]
+HARNESS_IDENTITY = ["-c", "user.name=caecilia-harness", "-c", "user.email=harness@localhost"]
 
 
 class WorkspaceError(Exception):
@@ -30,7 +30,7 @@ def branch_for(task_id: str) -> str:
     return f"caecilia/{task_id}"
 
 
-def _check_task_id(task_id: str) -> None:
+def validate_task_id(task_id: str) -> None:
     if not _TASK_ID.fullmatch(task_id):
         raise InvalidTaskIdError(f"task id must match [A-Za-z0-9_-]+: {task_id!r}")
 
@@ -45,7 +45,7 @@ class GitWorktreeBackend:
 
     async def create(self, task_id: str, base_commit: str) -> Workspace:
         """Add a worktree at `base_commit` on a new branch `caecilia/<task_id>`."""
-        _check_task_id(task_id)
+        validate_task_id(task_id)
         base = (
             await run_git(["rev-parse", "--verify", f"{base_commit}^{{commit}}"], self.repo_path)
         ).text
@@ -70,7 +70,7 @@ class GitWorktreeBackend:
         staged = await run_git(["diff", "--cached", "--quiet"], path, check=False)
         if staged.returncode == 1:
             await run_git(
-                [*_HARNESS_IDENTITY, "commit", "-q", "-m", f"caecilia: task {ws.task_id}"], path
+                [*HARNESS_IDENTITY, "commit", "-q", "-m", f"caecilia: task {ws.task_id}"], path
             )
         head = (await run_git(["rev-parse", "HEAD"], path)).text
 
