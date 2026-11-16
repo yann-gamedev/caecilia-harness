@@ -135,6 +135,7 @@ class Orchestrator:
         self._stream_seq: dict[str, int] = {}
         self._live: dict[str, _Live] = {}
         self._workspaces: dict[str, Workspace] = {}
+        self._outbox_in_flight: set[int] = set()
 
     def close(self) -> None:
         """Release resources handed over by bootstrap (DB connection, writer lock)."""
@@ -254,7 +255,7 @@ class Orchestrator:
             case S.READY:
                 self._lease_and_spawn(task)
             case S.LEASED:
-                await self.process_outbox()
+                await self.process_outbox(task_id)
                 if self.store.get_task(task_id).state is S.LEASED:
                     raise OrchestratorError(f"task {task_id} is LEASED but nothing spawned it")
             case S.RUNNING:
@@ -277,22 +278,36 @@ class Orchestrator:
         for live in list(self._live.values()):
             await live.worker.cancel(live.handle, mode)
 
-    async def process_outbox(self) -> None:
-        """Perform pending side effects. Safe to call again after a crash."""
+    async def process_outbox(self, task_id: str | None = None) -> None:
+        """Perform pending side effects (only `task_id`'s, if given). Safe to call again.
+
+        Several drivers share one event loop, and `worker.start` is awaited while the task is
+        still LEASED: two callers could both pass `_spawn`'s state check and start the worker
+        twice. Items being processed right now are therefore claimed in memory and skipped by
+        everyone else. After a crash that memory is gone, and `_spawn`'s check covers replays.
+        """
         for item in self.store.pending_outbox():
-            if item.kind != SPAWN_WORKER:
-                self.store.mark_outbox(item.id, "failed")
+            if task_id is not None and item.payload.get("task_id") != task_id:
                 continue
+            if item.id in self._outbox_in_flight:
+                continue
+            self._outbox_in_flight.add(item.id)
             try:
-                await self._spawn(
-                    str(item.payload["task_id"]),
-                    int(item.payload["attempt"]),
-                    int(item.payload.get("revision", -1)),
-                )
-            except Exception:
-                self.store.mark_outbox(item.id, "failed")
-                raise
-            self.store.mark_outbox(item.id, "done")
+                if item.kind != SPAWN_WORKER:
+                    self.store.mark_outbox(item.id, "failed")
+                    continue
+                try:
+                    await self._spawn(
+                        str(item.payload["task_id"]),
+                        int(item.payload["attempt"]),
+                        int(item.payload.get("revision", -1)),
+                    )
+                except Exception:
+                    self.store.mark_outbox(item.id, "failed")
+                    raise
+                self.store.mark_outbox(item.id, "done")
+            finally:
+                self._outbox_in_flight.discard(item.id)
 
     async def approve(self, action: Action) -> bool:
         """Ask the person about `action`, recording the request and the decision as events."""
