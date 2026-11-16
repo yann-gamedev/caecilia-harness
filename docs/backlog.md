@@ -65,7 +65,7 @@ Keputusan desain: ADR-0013 dan bagian "Rencana run dan penjadwalan paralel" di `
 
 Checklist:
 
-- [ ] M2-01
+- [x] M2-01
 - [ ] M2-02
 - [ ] M2-03
 - [ ] M2-04
@@ -132,3 +132,4 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
 - 2026-11-16 — M1-13 selesai: hook `CAECILIA_TEST_HOLD_AT` dan suite chaos (kill proses di 7 titik lalu `resume`); tidak ada bug recovery yang ditemukan.
 - 2026-11-16 — M1-14 selesai: keputusan D2 = DeepSeek; `DeepSeekProvider` (httpx, API key), `security/keys.py` (keyring/env + redaksi), `caecilia key set/status`, `--worker native --model`; dependensi baru `httpx` dan `keyring`.
 - 2026-11-16 — M2 dipecah menjadi 8 task (prompt 15–22); ADR-0013 dan keputusan D11 ditambahkan.
+- 2026-11-16 — M2-01 selesai: `core/globs.py` (pencocokan glob, normalisasi, `may_overlap` konservatif) dan `core/graph.py` (validasi graf, urutan topologis, `ready`, `blocked_by_failure`, `conflicts`).
