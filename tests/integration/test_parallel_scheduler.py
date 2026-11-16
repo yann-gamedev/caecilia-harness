@@ -100,7 +100,7 @@ def _create(orch: Orchestrator, repo: Path, specs: list[TaskSpec], max_parallel:
     return orch.create_run("g", str(repo), base, specs, "main", {}, max_parallel=max_parallel)
 
 
-# --- outbox race -----------------------------------------------------------------------------------
+# --- outbox race ---
 
 
 @pytest.mark.parametrize("scoped", [False, True], ids=["all-items", "per-task"])

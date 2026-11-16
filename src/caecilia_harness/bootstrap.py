@@ -18,6 +18,7 @@ from caecilia_harness import artifacts
 from caecilia_harness.core.models import Action, Event, Workspace
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
+from caecilia_harness.core.prompting import SerializedPrompter
 from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, harness_home
 from caecilia_harness.planning.plan import (
@@ -140,15 +141,17 @@ def _assemble(
         raise
     try:
         store = SqliteEventStore(conn, projectors=[project_runs_and_tasks])
+        # Parallel tasks may ask at the same time: questions go to the person one by one.
+        questions = SerializedPrompter(prompter)
         gate = SimpleGate(
-            repo_path, check_command, confirm=prompter.confirm_merge, auto_merge=auto_merge
+            repo_path, check_command, confirm=questions.confirm_merge, auto_merge=auto_merge
         )
         orchestrator = Orchestrator(
             store,
             GitWorktreeBackend(repo_path),
             gate,
             workers,
-            prompter,
+            questions,
             artifact_info=artifact_info,
             closers=[conn.close, lock.release],
         )

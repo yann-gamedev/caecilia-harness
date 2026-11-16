@@ -26,6 +26,7 @@ from caecilia_harness.core.clock import Clock, SystemClock
 from caecilia_harness.core.graph import (
     GraphNode,
     blocked_by_failure,
+    conflicts,
     ready,
     topological_order,
 )
@@ -61,6 +62,14 @@ SPAWN_WORKER = "spawn_worker"
 #: States where `run()` stops driving a task: terminal, or waiting for a person.
 STOP_STATES = TERMINAL | {S.NEEDS_HUMAN}
 DEFAULT_LEASE_TTL_S = 30.0
+#: Decision D11: until the M2-B benchmark says otherwise.
+DEFAULT_MAX_PARALLEL = 2
+#: States that count against `max_parallel` (a task waiting for the gate does not, ADR-0013).
+_HOLDS_WORKER_SLOT = frozenset({S.LEASED, S.RUNNING})
+#: States whose write set blocks a conflicting task from being leased.
+_BUSY = frozenset({S.LEASED, S.RUNNING, S.AWAITING_GATE, S.INTEGRATING})
+#: States the scheduler handles itself (PENDING, READY) or that need nothing more.
+_NO_DRIVER = STOP_STATES | {S.PENDING, S.READY}
 
 #: hash -> (path, size in bytes); provided by bootstrap so core never touches the filesystem.
 ArtifactInfo = Callable[[str], tuple[str, int]]
@@ -136,6 +145,7 @@ class Orchestrator:
         self._live: dict[str, _Live] = {}
         self._workspaces: dict[str, Workspace] = {}
         self._outbox_in_flight: set[int] = set()
+        self._merge_slot = asyncio.Lock()
 
     def close(self) -> None:
         """Release resources handed over by bootstrap (DB connection, writer lock)."""
@@ -205,30 +215,103 @@ class Orchestrator:
         return run_id
 
     async def run(self, run_id: str) -> str:
-        """Drive the run's tasks one at a time, in dependency order, until none can move.
+        """Drive the run's tasks concurrently until none can move (ADR-0013, scheduler).
 
-        Each round first promotes PENDING tasks whose blockers are DONE (or cancels those with
-        a FAILED/CANCELLED blocker), then drives the first unfinished task in topological order
-        until it stops. Records `run.finished` and returns the run status.
+        One scheduler loop plus one driver coroutine per active task. Each round the loop
+        promotes or cancels PENDING tasks, gives every task already in flight (e.g. after
+        recovery) a driver, and leases READY tasks in topological order while fewer than
+        `max_parallel` are LEASED/RUNNING and the write set conflicts with no busy task. It then
+        waits for any driver to finish. If a driver fails unexpectedly, every other driver and
+        worker is cancelled and the error is raised; `resume` tidies up from the event log.
+        Records `run.finished` and returns the run status.
         """
-        order = topological_order(_nodes(t.spec for t in self.store.list_tasks(run_id)))
-        while True:
-            for task_id in order:
-                if self.store.get_task(task_id).state is S.PENDING:
-                    await self.advance(task_id)
-            current = next(
-                (t for t in order if self.store.get_task(t).state not in STOP_STATES | {S.PENDING}),
-                None,
-            )
-            if current is None:
-                break
-            while self.store.get_task(current).state not in STOP_STATES:
-                await self.advance(current)
+        tasks = self.store.list_tasks(run_id)
+        order = topological_order(_nodes(t.spec for t in tasks))
+        write_sets = {t.id: list(t.spec.write_set) for t in tasks}
+        limit = self._max_parallel(run_id)
+        drivers: dict[str, asyncio.Task[None]] = {}
+        try:
+            while True:
+                self._schedule(run_id, order, write_sets, limit, drivers)
+                if not drivers:
+                    break
+                finished, _ = await asyncio.wait(
+                    drivers.values(), return_when=asyncio.FIRST_COMPLETED
+                )
+                for task_id, driver in list(drivers.items()):
+                    if driver in finished:
+                        del drivers[task_id]
+                        driver.result()  # re-raises a driver's unexpected error
+        except BaseException:
+            await self._abort(drivers)
+            raise
         status = self._run_status(run_id)
         self.store.append(
             [self._event(f"run:{run_id}", "run.finished", {"run_id": run_id, "status": status})]
         )
         return status
+
+    def _max_parallel(self, run_id: str) -> int:
+        """`max_parallel` recorded with the run (CLI option or plan), else the default (D11)."""
+        value = self._run_info(run_id).get("max_parallel")
+        return max(1, int(value)) if value else DEFAULT_MAX_PARALLEL
+
+    def _schedule(
+        self,
+        run_id: str,
+        order: Sequence[str],
+        write_sets: Mapping[str, Sequence[str]],
+        limit: int,
+        drivers: dict[str, asyncio.Task[None]],
+    ) -> None:
+        """One scheduling round. Synchronous on purpose: no other coroutine runs meanwhile."""
+        for task_id in order:
+            task = self.store.get_task(task_id)
+            if task.state is S.PENDING:
+                self._promote_or_cancel(task)
+        states = {task.id: task.state for task in self.store.list_tasks(run_id)}
+
+        # Tasks already in flight (found after recovery, or REWORK/RETRY_WAIT on their way
+        # back to READY) get a driver too.
+        for task_id in order:
+            if task_id not in drivers and states[task_id] not in _NO_DRIVER:
+                drivers[task_id] = self._start_driver(task_id)
+
+        busy = [task_id for task_id in order if states[task_id] in _BUSY]
+        running = sum(states[task_id] in _HOLDS_WORKER_SLOT for task_id in order)
+        for task_id in order:
+            if states[task_id] is not S.READY or task_id in drivers:
+                continue
+            if running >= limit:
+                break
+            if conflicts(write_sets, busy, task_id):
+                continue  # may touch the same files as a busy task: wait for it
+            self._lease_and_spawn(self.store.get_task(task_id))
+            running += 1
+            busy.append(task_id)
+            drivers[task_id] = self._start_driver(task_id)
+
+    def _start_driver(self, task_id: str) -> asyncio.Task[None]:
+        return asyncio.create_task(self._drive(task_id), name=f"caecilia-driver-{task_id}")
+
+    async def _drive(self, task_id: str) -> None:
+        """Advance one task until it stops, or is back to READY (retry/rework): the scheduler
+        then decides when it may run again."""
+        while True:
+            state = await self.advance(task_id)
+            if state in STOP_STATES or state is S.READY:
+                return
+
+    async def _abort(self, drivers: Mapping[str, asyncio.Task[None]]) -> None:
+        """Stop everything this run started, so no worker or coroutine outlives `run()`."""
+        with contextlib.suppress(Exception):
+            await self.cancel_all("hard")
+        for driver in drivers.values():
+            driver.cancel()
+        await asyncio.gather(*drivers.values(), return_exceptions=True)
+        for live in list(self._live.values()):
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await live.worker.result(live.handle)
 
     def _run_status(self, run_id: str) -> str:
         states = {task.state for task in self.store.list_tasks(run_id)}
@@ -557,6 +640,16 @@ class Orchestrator:
             self.store.renew_lease(task_id, self.holder, self.lease_ttl_s)
 
     async def _integrate(self, task: TaskRow) -> None:
+        """Run the gate under the merge slot (ADR-0005: one integration at a time).
+
+        AWAITING_GATE -> INTEGRATING only happens once the slot is held, so INTEGRATING means
+        "at the head of the merge queue". A task found INTEGRATING after recovery queues for
+        the slot like any other before its gate is run again.
+        """
+        async with self._merge_slot:
+            await self._integrate_holding_slot(self.store.get_task(task.id))
+
+    async def _integrate_holding_slot(self, task: TaskRow) -> None:
         diff = self._last_diff(task.id)
         run = self._run_info(task.run_id)
         if task.state is S.AWAITING_GATE:
@@ -655,6 +748,10 @@ class Orchestrator:
     def _append_task(
         self, task_id: str, events: Sequence[NewEvent], outbox: Sequence[OutboxItem] = ()
     ) -> list[Event]:
+        # Deliberately synchronous: reading the cached stream_seq, appending and updating the
+        # cache happen without an `await` in between, so no other driver on this event loop can
+        # interleave. Each driver also only writes its own task's stream. Adding an `await`
+        # here would turn the CAS into a race between drivers.
         stream = f"task:{task_id}"
         if stream not in self._stream_seq:
             existing = self.store.read_stream(stream)
