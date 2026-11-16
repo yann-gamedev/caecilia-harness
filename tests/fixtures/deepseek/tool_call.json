@@ -1,0 +1,12 @@
+{
+  "_comment": "Hand-written from the documented DeepSeek stream format: a text delta, then one function tool call whose arguments arrive in pieces, then finish_reason=tool_calls with usage. Includes a reasoning_content delta, which the adapter must ignore. No key or auth header.",
+  "status": 200,
+  "chunks": [
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"role": "assistant", "content": null, "reasoning_content": "The task asks for a notes file."}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"content": "Saya tulis filenya."}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_0_rec", "type": "function", "function": {"name": "write_file", "arguments": ""}}]}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"path\": \"NOTES.md\", \"con"}}]}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "tent\": \"catatan\\n\"}"}}]}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-tool", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"content": ""}, "logprobs": null, "finish_reason": "tool_calls"}], "usage": {"prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130}}
+  ]
+}
