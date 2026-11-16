@@ -48,16 +48,42 @@ Checklist:
 - [x] M1-13
 - [x] M1-14
 
-## M2–M7 (kasar; dipecah jadi prompt setelah M1 selesai dan disetujui pemilik)
+## M2 — Orkestrasi paralel
 
-- [ ] **M2 — Orkestrasi paralel.** Task graph berrevisi + validasi (hilang, duplikat, diri sendiri,
-  siklus); scheduler dengan slot global, per provider, exec, dan merge; cek write set beririsan;
-  dua worktree bersamaan.
-  - Diterima jika: dua task independen berjalan bertumpuk waktunya dengan log terpisah; graf bersiklus
-    ditolak; spawn tree yang lebih lebar dari batas slot + 1 tidak deadlock.
-- [ ] **M2-B — Benchmark serial vs paralel.** Workload W1 (frontend/backend independen), W2 (refactor
-  saling bergantung), W3 (banyak edit kecil): wall time, token, biaya, konflik, kegagalan gate;
-  ≥ 5 run per mode; median + rentang.
+Keputusan desain: ADR-0013 dan bagian "Rencana run dan penjadwalan paralel" di `docs/architecture.md`.
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| M2-01 | Glob, write set, dan validasi graf (core murni) | [15](prompts/15-graf-dan-write-set.md) | M1-14 |
+| M2-02 | File plan TOML + run multi-task dengan dependensi (serial) | [16](prompts/16-plan-file-multi-task.md) | M2-01 |
+| M2-03 | Scheduler paralel, slot merge, prompter serial | [17](prompts/17-scheduler-paralel.md) | M2-02 |
+| M2-04 | Slot provider/exec, budget run, penegakan write set | [18](prompts/18-slot-budget-write-set.md) | M2-03 |
+| M2-05 | Planner LLM: `caecilia plan` | [19](prompts/19-planner-llm.md) | M2-02 |
+| M2-06 | Revisi graf saat run berhenti (CAS) | [20](prompts/20-revisi-graf.md) | M2-03 |
+| M2-07 | Chaos dan tes konkurensi paralel | [21](prompts/21-chaos-paralel.md) | M2-04, M2-06 |
+| M2-08 | Benchmark serial vs paralel (M2-B) | [22](prompts/22-benchmark.md) | M2-07, M2-05 |
+
+Checklist:
+
+- [ ] M2-01
+- [ ] M2-02
+- [ ] M2-03
+- [ ] M2-04
+- [ ] M2-05
+- [ ] M2-06
+- [ ] M2-07
+- [ ] M2-08
+
+Diterima jika (milestone): dua task independen berjalan bertumpuk waktunya dengan log terpisah; graf
+bersiklus ditolak; spawn tree yang lebih lebar dari batas slot + 1 tidak deadlock; crash saat dua task
+berjalan tidak menghasilkan merge ganda; benchmark menghasilkan angka untuk keputusan D11.
+
+Ditunda dari M2 (dicatat agar tidak hilang): worker mengusulkan task atau edge baru saat berjalan
+(ADR-0003) → M3 bersama konteks bersama; backoff waktu untuk RETRY_WAIT → M4; menaikkan budget run yang
+sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → setelah M2-B.
+
+## M3–M8 (kasar; dipecah jadi prompt setelah milestone sebelumnya selesai dan disetujui pemilik)
+
 - [ ] **M3 — Konteks bersama.** `documents` dengan CAS, `context_pins`, context pack builder,
   `task.context_stale`, ringkasan handoff.
   - Diterima jika: dokumen yang di-pin berubah saat task berjalan → task STALE dalam satu siklus event;
@@ -105,3 +131,4 @@ Checklist:
 - 2026-11-11 — M1-12 selesai: CLI `run`/`resume`/`status`/`runs`, `TerminalPrompter`, fungsi aplikasi di `bootstrap.py`; opsi run disimpan di `run.created` untuk `resume`.
 - 2026-11-16 — M1-13 selesai: hook `CAECILIA_TEST_HOLD_AT` dan suite chaos (kill proses di 7 titik lalu `resume`); tidak ada bug recovery yang ditemukan.
 - 2026-11-16 — M1-14 selesai: keputusan D2 = DeepSeek; `DeepSeekProvider` (httpx, API key), `security/keys.py` (keyring/env + redaksi), `caecilia key set/status`, `--worker native --model`; dependensi baru `httpx` dan `keyring`.
+- 2026-11-16 — M2 dipecah menjadi 8 task (prompt 15–22); ADR-0013 dan keputusan D11 ditambahkan.

@@ -17,3 +17,4 @@ Satu file per keputusan. Nilai status: `Proposed` (jangan diimplementasikan), `D
 | [0010](0010-slot-scope.md) | Slot konkurensi hanya dipegang selama operasi | Diterima |
 | [0011](0011-durable-vs-ephemeral-events.md) | Event durable vs ephemeral | Diterima |
 | [0012](0012-tui-dulu-gui-menyusul.md) | TUI dulu, GUI desktop menyusul sebagai frontend kedua | Diterima |
+| [0013](0013-rencana-run-dan-penjadwalan-paralel.md) | Rencana run dan penjadwalan paralel | Diterima |

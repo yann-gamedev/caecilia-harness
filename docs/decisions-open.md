@@ -15,3 +15,4 @@ Setelah diputuskan: isi kolom "Keputusan", lalu bila perlu ubah ADR terkait.
 | D8 | Nama produk | "Caecilia Harness". Hindari nama/logo DeepSeek, Claude Code, Anthropic, OpenAI. | |
 | D9 | Multi-user di roadmap | Tidak (SQLite lokal, ADR-0002). | |
 | D10 | Bentuk antarmuka | — | **Diputuskan 2026-11-11:** TUI dulu (M7). GUI desktop berjendela menyusul nanti sebagai frontend kedua (M8), dimulai hanya kalau pemilik memutuskan. Lihat ADR-0012. |
+| D11 | `max_parallel` default | 2 sampai benchmark M2-B (prompt 22) selesai; lalu ditetapkan dari data. | |
