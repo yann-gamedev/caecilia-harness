@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import os
 import socket
+import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -56,6 +57,21 @@ DEFAULT_LEASE_TTL_S = 30.0
 
 #: hash -> (path, size in bytes); provided by bootstrap so core never touches the filesystem.
 ArtifactInfo = Callable[[str], tuple[str, int]]
+
+
+HOLD_ENV = "CAECILIA_TEST_HOLD_AT"
+_HOLD_SECONDS = 60
+
+
+def _chaos_hold(point: str) -> None:
+    """Test hook for the chaos suite only (tests/chaos): never set this variable otherwise.
+
+    With CAECILIA_TEST_HOLD_AT=<point>, announce the point on stdout and block, so the test
+    can kill the process at an exact, already-committed moment. A no-op without the variable.
+    """
+    if os.environ.get(HOLD_ENV) == point:
+        print(f"CAECILIA_HOLD {point}", flush=True)
+        time.sleep(_HOLD_SECONDS)
 
 
 class OrchestratorError(Exception):
@@ -475,8 +491,11 @@ class Orchestrator:
                 task.id,
                 [self._event(f"task:{task.id}", "gate.merging", {"old": old, "new": new})],
             )
+            _chaos_hold("MERGING")  # recorded, target not moved yet
 
         report = await self.gate.check(diff, str(run["target_branch"]), record_merging)
+        if report.merged_commit:
+            _chaos_hold("MERGED")  # target moved, DONE not recorded yet
         task = self.store.get_task(task.id)
         payload = {"report": report.model_dump(mode="json")}
         passed = self._event(f"task:{task.id}", "gate.passed", payload)
@@ -543,6 +562,7 @@ class Orchestrator:
         )
         event = self._event(f"task:{task.id}", "task.state_changed", change.model_dump(mode="json"))
         self._append_task(task.id, [*before, event, *after], outbox)
+        _chaos_hold(to.value)
         return self.store.get_task(task.id)
 
     def _append_task(
