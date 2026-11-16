@@ -46,7 +46,7 @@ Checklist:
 - [x] M1-11
 - [x] M1-12
 - [x] M1-13
-- [ ] M1-14
+- [x] M1-14
 
 ## M2–M7 (kasar; dipecah jadi prompt setelah M1 selesai dan disetujui pemilik)
 
@@ -104,3 +104,4 @@ Checklist:
 - 2026-11-11 — M1-11 selesai: `WriterLock`, lease task (acquire/renew/release/expire), heartbeat, `recover()`/`resume()` per state; worktree attempt ke-2 dst. bernama `<task>-<attempt>`; port `Gate.branch_head`.
 - 2026-11-11 — M1-12 selesai: CLI `run`/`resume`/`status`/`runs`, `TerminalPrompter`, fungsi aplikasi di `bootstrap.py`; opsi run disimpan di `run.created` untuk `resume`.
 - 2026-11-16 — M1-13 selesai: hook `CAECILIA_TEST_HOLD_AT` dan suite chaos (kill proses di 7 titik lalu `resume`); tidak ada bug recovery yang ditemukan.
+- 2026-11-16 — M1-14 selesai: keputusan D2 = DeepSeek; `DeepSeekProvider` (httpx, API key), `security/keys.py` (keyring/env + redaksi), `caecilia key set/status`, `--worker native --model`; dependensi baru `httpx` dan `keyring`.
