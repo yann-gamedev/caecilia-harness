@@ -26,12 +26,15 @@ from caecilia_harness.bootstrap import (
     get_run_status,
     list_runs,
     prepare_run,
+    prepare_run_from_plan,
     resume_run,
 )
+from caecilia_harness.core.graph import GraphError
 from caecilia_harness.core.orchestrator import OrchestratorError
 from caecilia_harness.interfaces.doctor import run_all
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event, format_runs, format_status
+from caecilia_harness.planning.plan import PlanError, load_plan
 from caecilia_harness.security import keys
 from caecilia_harness.store.lock import WriterLockedError
 
@@ -45,7 +48,14 @@ app = typer.Typer(
 _MARK = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[FAIL]"}
 _POLL_S = 0.2
 _EXIT = {"done": 0, "needs_human": 2}
-_USER_ERRORS = (AppError, keys.MissingApiKeyError, WriterLockedError, OrchestratorError)
+_USER_ERRORS = (
+    AppError,
+    keys.MissingApiKeyError,
+    WriterLockedError,
+    OrchestratorError,
+    PlanError,
+    GraphError,
+)
 
 
 class WorkerChoice(StrEnum):
@@ -160,7 +170,6 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    goal: Annotated[str, typer.Argument(help="Apa yang harus dikerjakan.")],
     repo: Annotated[Path, typer.Option("--repo", help="Repo Git yang dikerjakan.")],
     check: Annotated[
         str, typer.Option("--check", help='Perintah pengecekan gate, mis. "uv run pytest".')
@@ -183,23 +192,50 @@ def run(
         str | None,
         typer.Option("--model", help="Nama model di provider (wajib untuk --worker native)."),
     ] = None,
+    plan: Annotated[
+        Path | None,
+        typer.Option("--plan", help="File plan.toml dengan banyak task (ganti GOAL)."),
+    ] = None,
     plain: PlainOpt = False,
+    goal: Annotated[
+        str | None, typer.Argument(help="Apa yang harus dikerjakan (atau pakai --plan).")
+    ] = None,
 ) -> None:
-    """Start a run with one task. Exit code: 0 = DONE, 2 = NEEDS_HUMAN, 1 = otherwise."""
+    """Start a run from GOAL (one task) or --plan FILE (several tasks with dependencies).
+
+    Exit code: 0 = DONE, 2 = NEEDS_HUMAN, 1 = otherwise. With --plan, --worker is the default
+    for tasks that do not name a worker, and --target overrides the plan's target.
+    """
+    if (goal is None) == (plan is None):
+        raise _fail("sebutkan tepat satu: GOAL atau --plan FILE")
     argv = parse_check(check)
     if not argv:
         raise _fail("--check tidak boleh kosong")
-    start = prepare_run(
-        goal,
-        repo,
-        argv,
-        TerminalPrompter(),
-        worker_kind=worker.value,
-        target=target,
-        auto_merge=auto_merge,
-        unsafe_no_sandbox=unsafe_no_sandbox,
-        model=model,
-    )
+    if plan is not None:
+        start = prepare_run_from_plan(
+            plan,
+            repo,
+            argv,
+            TerminalPrompter(),
+            worker_kind=worker.value,
+            target=target,
+            auto_merge=auto_merge,
+            unsafe_no_sandbox=unsafe_no_sandbox,
+            model=model,
+        )
+    else:
+        assert goal is not None  # noqa: S101 - checked above
+        start = prepare_run(
+            goal,
+            repo,
+            argv,
+            TerminalPrompter(),
+            worker_kind=worker.value,
+            target=target,
+            auto_merge=auto_merge,
+            unsafe_no_sandbox=unsafe_no_sandbox,
+            model=model,
+        )
     try:
         status = asyncio.run(_drive(start, plain))
     except _USER_ERRORS as exc:
@@ -257,6 +293,26 @@ def runs(
         return
     for line in format_runs(found, plain):
         typer.echo(line)
+
+
+plan_app = typer.Typer(help="Periksa dan kelola file plan.toml.")
+app.add_typer(plan_app, name="plan")
+
+
+@plan_app.command("validate")
+def plan_validate(
+    path: Annotated[Path, typer.Argument(help="File plan.toml.")],
+) -> None:
+    """Check a plan offline (no database, no lock) and print every problem found."""
+    try:
+        loaded = load_plan(path)
+    except PlanError as exc:
+        typer.echo(f"Plan tidak valid: {exc.source}", err=True)
+        for problem in exc.problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(code=1) from exc
+    edges = sum(len(task.blocked_by) for task in loaded.tasks)
+    typer.echo(f"Plan valid: {len(loaded.tasks)} task, {edges} dependensi.")
 
 
 key_app = typer.Typer(help="Kelola API key provider model (disimpan di keychain OS).")

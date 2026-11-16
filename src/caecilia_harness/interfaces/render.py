@@ -38,6 +38,9 @@ def event_summary(event: Event) -> str:
     """Short human summary of an event's payload."""
     p = event.payload
     match event.type:
+        case "graph.revised":
+            tasks, edges = p.get("tasks") or [], p.get("edges") or []
+            return f"revisi {p.get('revision')}: {len(tasks)} task, {len(edges)} dependensi"
         case "run.created":
             return f"goal: {p.get('goal', '')}"
         case "run.finished":
@@ -112,10 +115,18 @@ def format_status(status: RunStatus, plain: bool) -> list[str]:
         "",
     ]
     rows = [
-        [task.id, task.state, str(task.attempts), task.worker, task.summary]
+        [
+            task.id,
+            task.state,
+            ", ".join(task.blocked_by) or "-",
+            str(task.attempts),
+            task.worker,
+            task.summary,
+        ]
         for task in status.tasks
     ]
-    return lines + _table(["TASK", "STATE", "ATTEMPTS", "WORKER", "RINGKASAN"], rows, plain)
+    header = ["TASK", "STATE", "BLOCKED_BY", "ATTEMPTS", "WORKER", "RINGKASAN"]
+    return lines + _table(header, rows, plain)
 
 
 def format_runs(runs: Sequence[RunSummary], plain: bool) -> list[str]:

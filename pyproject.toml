@@ -85,6 +85,7 @@ forbidden_modules = [
     "caecilia_harness.telemetry",
     "caecilia_harness.bootstrap",
     "caecilia_harness.artifacts",
+    "caecilia_harness.planning",
 ]
 
 [[tool.importlinter.contracts]]
@@ -103,6 +104,7 @@ source_modules = [
     "caecilia_harness.telemetry",
     "caecilia_harness.bootstrap",
     "caecilia_harness.artifacts",
+    "caecilia_harness.planning",
 ]
 forbidden_modules = ["caecilia_harness.interfaces"]
 
