@@ -1,0 +1,16 @@
+# Two tasks: `web` needs the result of `api`.
+version = 1
+goal = "Endpoint lalu halaman"
+
+[[task]]
+id = "api"
+title = "Endpoint"
+instructions = "Tulis endpoint."
+write_set = ["api/**"]
+
+[[task]]
+id = "web"
+title = "Halaman"
+instructions = "Tulis halaman yang memakai endpoint."
+write_set = ["web/**"]
+blocked_by = ["api"]
