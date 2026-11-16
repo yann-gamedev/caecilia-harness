@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -111,6 +113,46 @@ async def test_confirm_merge_on_tty() -> None:
     report = GateReport(task_id="t1", passed=True, checks={"command": True}, output_tail="ok\n")
     assert await prompter.confirm_merge(report) is True
     assert any("command: ok" in line for line in lines)
+
+
+async def test_slow_answer_does_not_block_the_event_loop() -> None:
+    def slow_read(prompt: str) -> str:
+        time.sleep(0.5)  # a person thinking; blocks only the reader thread
+        return "y"
+
+    prompter = TerminalPrompter(read_line=slow_read, isatty=lambda: True, echo=lambda _: None)
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    ticking = asyncio.create_task(ticker())
+    try:
+        assert await prompter.ask_approval(_action("make")) is True
+    finally:
+        ticking.cancel()
+    assert ticks >= 10  # the loop kept running while the answer was pending
+
+
+async def test_end_of_input_means_no() -> None:
+    def closed(prompt: str) -> str:
+        raise EOFError
+
+    prompter = TerminalPrompter(read_line=closed, isatty=lambda: True, echo=lambda _: None)
+    assert await prompter.ask_approval(_action("make")) is False
+    assert await prompter.confirm_merge(GateReport(task_id="t1", passed=True)) is False
+
+
+async def test_reader_errors_reach_the_caller() -> None:
+    def broken(prompt: str) -> str:
+        raise OSError("terminal gone")
+
+    prompter = TerminalPrompter(read_line=broken, isatty=lambda: True, echo=lambda _: None)
+    with pytest.raises(OSError, match="terminal gone"):
+        await prompter.ask_approval(_action("make"))
 
 
 # --- rendering -----------------------------------------------------------------------------------
