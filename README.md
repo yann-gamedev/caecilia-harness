@@ -4,8 +4,8 @@ AI orchestration harness: dekomposisi task yang sadar dependensi, sesi worker pa
 terisolasi, konteks bersama dengan revisi eksplisit, dan integration gate sebelum perubahan apa pun
 masuk ke branch utama.
 
-Status: **M1 berjalan**. Satu task bisa dijalankan end-to-end dengan worker palsu; worker model
-sungguhan menunggu keputusan D2 (`docs/decisions-open.md`). Lihat `docs/backlog.md`.
+Status: **M1 selesai**. Satu task bisa dijalankan end-to-end, dengan worker palsu (`--worker fake`)
+atau dengan model sungguhan lewat API DeepSeek (`--worker native`). Lihat `docs/backlog.md`.
 
 ## Mulai cepat (pengembangan)
 
@@ -33,7 +33,7 @@ uv run caecilia resume            # lanjutkan run yang belum selesai setelah cra
 ```
 
 - `--worker fake` menulis `CAECILIA_FAKE.md` berisi goal; dipakai untuk demo dan tes.
-  `--worker native` butuh provider model (keputusan D2).
+  `--worker native` memakai model sungguhan (lihat bagian berikut).
 - Tanpa `--auto-merge`, merge ke branch target meminta konfirmasi `y/n` di terminal. Kalau stdin
   bukan terminal interaktif, merge dan approval exec otomatis ditolak.
 - `--target BRANCH` memilih branch target (default: branch aktif di repo).
@@ -42,6 +42,28 @@ uv run caecilia resume            # lanjutkan run yang belum selesai setelah cra
 - Ctrl+C sekali membatalkan worker dengan halus, dua kali secara paksa.
 - `--plain` mematikan warna untuk log dan CI.
 - Hanya satu `caecilia run`/`resume` yang boleh berjalan sekaligus; yang kedua ditolak.
+
+### Worker native (model sungguhan)
+
+Provider pertama adalah DeepSeek, lewat API resminya dengan **API key** (ADR-0007). Harness tidak
+pernah memakai login akun konsumen. Pemakaian API tunduk pada
+[DeepSeek Open Platform Terms of Service](https://cdn.deepseek.com/policies/en-US/deepseek-open-platform-terms-of-service.html)
+dan dikenai biaya sesuai akun Anda.
+
+```sh
+uv run caecilia key set deepseek      # input tersembunyi; disimpan di keychain OS
+uv run caecilia key status            # hanya menampilkan ada/tidak, tidak pernah isi key
+
+uv run caecilia run "<goal>" --repo PATH --check "uv run pytest" --worker native --model <model>
+```
+
+- `--model` wajib diisi dengan nama model yang tersedia di akun DeepSeek Anda; harness tidak
+  menyimpan nama model bawaan.
+- Untuk pengembangan, key juga bisa diberikan lewat variabel env `DEEPSEEK_API_KEY` (keychain
+  didahulukan). Key tidak pernah dicetak, dicatat di event, atau diteruskan ke perintah yang
+  dijalankan worker.
+- Setiap perintah yang ingin dijalankan model meminta approval di terminal (`y`/`n`/`a`). Di
+  Windows belum ada sandbox, jadi approval selalu ditanyakan kecuali `--unsafe-no-sandbox`.
 
 ## Bekerja dengan coding agent
 
