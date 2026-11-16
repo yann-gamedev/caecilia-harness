@@ -32,6 +32,7 @@ berversi, dan worktree; hasilnya diverifikasi ulang oleh integration gate sebelu
 | `interfaces` | CLI (Typer), TUI (Textual) | M1 (CLI), M7 (TUI) |
 | `telemetry` | log terstruktur, event usage dan biaya | M1+ |
 | `artifacts.py` | penyimpanan file content-addressed (sha256) di `CAECILIA_HOME/artifacts` | M1 |
+| `planning` | format plan TOML (baca/tulis), planner LLM | M2 |
 | `bootstrap.py` | merakit store, provider, worker, workspace, gate menjadi orchestrator siap pakai | M1 |
 | `paths.py` | lokasi data runtime | M0 |
 
@@ -82,7 +83,8 @@ menjadi CAS. `idempotency_key` unik. Payload besar disimpan sebagai artefak dan 
 Tipe awal: `run.created`, `run.finished`, `task.created`, `task.state_changed`, `task.lease_acquired`,
 `task.lease_released`, `task.lease_expired`, `task.context_stale`, `document.updated`,
 `worker.started`, `worker.result`, `gate.started`, `gate.passed`, `gate.failed`,
-`approval.requested`, `approval.decided`, `usage.recorded`.
+`approval.requested`, `approval.decided`, `usage.recorded`, `graph.revised` (M2),
+`run.budget_exceeded` (M2).
 
 Durable vs ephemeral (ADR-0011): stream token tidak pernah masuk DB; yang masuk hanya ringkasan,
 checkpoint, perubahan state, approval, dan usage.
@@ -136,6 +138,75 @@ Skema: `src/caecilia_harness/store/schema.sql`. `context_pins` menggerakkan inva
 - `Gate.branch_head(branch)` dipakai recovery untuk membandingkan target dengan `gate.merging {old, new}`.
 - `Orchestrator.recover()` (async) dijalankan sebelum `resume()`; aturannya mengikuti tabel di
   `docs/prompts/11-lease-recovery.md`.
+
+## Rencana run dan penjadwalan paralel (M2, ADR-0013)
+
+### Format `plan.toml`
+
+```toml
+version = 1
+goal = "Tambah endpoint /health dan halaman status"
+target = "main"          # opsional; default branch aktif di repo
+max_parallel = 2         # opsional; default 2 (keputusan D11)
+
+[budget]                 # opsional; budget seluruh run
+max_input_tokens = 2_000_000
+max_output_tokens = 200_000
+
+[[task]]
+id = "api"               # [A-Za-z0-9_-]+, unik di dalam plan
+title = "Endpoint /health"
+instructions = """
+Tambahkan endpoint GET /health yang mengembalikan {"status": "ok"}.
+"""
+acceptance = ["GET /health -> 200 dan body {\"status\": \"ok\"}"]
+write_set = ["api/**", "tests/api/**"]
+blocked_by = []
+worker = "native"        # opsional; default dari CLI
+idempotent = true        # opsional; default true
+
+[task.budget]            # opsional; budget per task (sama dengan `Budget`)
+max_steps = 40
+
+[[task]]
+id = "web"
+title = "Halaman status"
+instructions = "Tampilkan hasil /health di halaman status."
+write_set = ["web/**"]
+blocked_by = ["api"]
+```
+
+`TaskSpec.id` di DB = `<run_id>-<id plan>`; `blocked_by` di plan memakai id plan dan diterjemahkan saat
+run dibuat. Perintah `caecilia run GOAL` tanpa `--plan` tetap membuat run satu task (write set `["**"]`).
+
+### Graf, dependensi, dan base commit
+
+- Stream `graph:<run_id>`; event `graph.revised {revision, tasks: [id...], edges: [[task, blocker]...]}`.
+  Revisi 1 dicatat bersama `run.created`. Revisi berikutnya hanya saat run tidak sedang dieksekusi.
+- PENDING → READY kalau semua blocker DONE. Blocker FAILED/CANCELLED → dependen CANCELLED.
+  Blocker NEEDS_HUMAN → dependen tetap PENDING.
+- Base commit task = head branch target saat spawn (dicatat di `worker.started.base_commit`).
+
+### Write set
+
+- Pola glob relatif repo dengan `/`: `*` (satu segmen), `**` (nol atau lebih segmen), `?`.
+  Kosong = `["**"]`.
+- Dua task boleh berjalan bersamaan hanya kalau setiap pasangan pola terbukti terpisah: prefix literal
+  (segmen sebelum wildcard pertama) berbeda di suatu segmen. Selain itu dianggap beririsan → serial.
+- Sebelum gate: semua file di `DiffArtifact.files_changed` wajib cocok dengan salah satu pola, kalau tidak
+  `gate.failed` dengan `checks.write_set = false` dan daftar file pelanggar masuk handoff note.
+
+### Scheduler dan slot
+
+| Slot | Default | Dipegang selama |
+| --- | --- | --- |
+| `max_parallel` | 2 | task di LEASED/RUNNING (bukan saat menunggu gate) |
+| provider | 2 per provider | satu request `stream()` ke model |
+| exec | 2 | satu perintah `ExecRunner.run()` |
+| merge | 1 | satu `Gate.check()` |
+
+Pertanyaan ke pengguna (approval, konfirmasi merge) diserialkan dan tidak memblokir event loop.
+Budget run terlampaui → tidak ada lease baru; run berhenti `needs_human` setelah task berjalan selesai.
 
 ## Aturan konkurensi
 
