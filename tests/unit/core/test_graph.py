@@ -28,7 +28,7 @@ def kinds(nodes: list[GraphNode]) -> list[tuple[str, str]]:
     return [(issue.kind, issue.task_id) for issue in validate_graph(nodes)]
 
 
-# --- validate_graph --------------------------------------------------------------------------------
+# --- validate_graph ---
 
 
 def test_valid_graph_has_no_issues() -> None:
@@ -100,7 +100,7 @@ def test_all_problems_are_reported_in_a_stable_order() -> None:
     assert kinds(nodes) == expected  # deterministic
 
 
-# --- topological_order -----------------------------------------------------------------------------
+# --- topological_order ---
 
 
 def test_topological_order_is_stable_and_respects_edges() -> None:
@@ -141,7 +141,7 @@ def test_topological_order_property(data: st.DataObject) -> None:
         assert all(position[blocker] < position[node.id] for blocker in node.blocked_by)
 
 
-# --- ready / blocked_by_failure / conflicts -----------------------------------------------------------
+# --- ready / blocked_by_failure / conflicts ---
 
 
 def test_ready_lists_pending_tasks_whose_blockers_are_done() -> None:

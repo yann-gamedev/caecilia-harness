@@ -136,7 +136,7 @@ def test_may_overlap_rejects_invalid_patterns() -> None:
         may_overlap(["../x"], ["a/**"])
 
 
-# --- property: "disjoint" is never wrong -----------------------------------------------------------
+# --- property: "disjoint" is never wrong ---
 
 _SEGMENTS = st.sampled_from(["a", "b", "ab", "c.py"])
 _PATTERN_SEGMENTS = st.sampled_from(["a", "b", "ab", "c.py", "*", "?", "a*", "*.py", "?b", "**"])
