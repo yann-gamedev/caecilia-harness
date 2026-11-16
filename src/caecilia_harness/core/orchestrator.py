@@ -17,15 +17,22 @@ import os
 import socket
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from caecilia_harness.core.clock import Clock, SystemClock
+from caecilia_harness.core.graph import (
+    GraphNode,
+    blocked_by_failure,
+    ready,
+    topological_order,
+)
 from caecilia_harness.core.models import (
     Action,
     Actor,
+    Budget,
     ContextPack,
     DiffArtifact,
     Event,
@@ -84,6 +91,13 @@ class _Live:
     handle: RunHandle
 
 
+def _nodes(specs: Iterable[TaskSpec]) -> list[GraphNode]:
+    return [
+        GraphNode(id=spec.id, blocked_by=tuple(spec.blocked_by), write_set=tuple(spec.write_set))
+        for spec in specs
+    ]
+
+
 def _is_transient(error: str | None) -> bool:
     # Convention for worker errors: "transient..." may succeed if retried; everything else
     # (budget_exceeded:*, provider_error:*, worker_crashed:*, permanent) is final.
@@ -135,16 +149,28 @@ class Orchestrator:
         goal: str,
         repo_path: str,
         base_commit: str,
-        spec: TaskSpec,
+        specs: Sequence[TaskSpec],
         target_branch: str = "main",
         options: Mapping[str, Any] | None = None,
+        *,
+        max_parallel: int | None = None,
+        budget: Budget | None = None,
     ) -> str:
-        """Record a new run with its single task (M1). Returns the run id (`spec.run_id`).
+        """Record a new run with its tasks and graph revision 1, in one append. Returns the run id.
 
-        `options` (check command, worker kind, ...) are stored with the run so a later
-        `resume` can rebuild the same orchestrator.
+        The graph is validated first (`GraphError` on any problem, nothing is written). Tasks are
+        created in topological order, so every blocker exists before its dependents. `options`
+        (check command, worker kinds, ...) are stored with the run so `resume` can rebuild the
+        same orchestrator.
         """
-        run_id = spec.run_id
+        if not specs:
+            raise ValueError("a run needs at least one task")
+        run_id = specs[0].run_id
+        if any(spec.run_id != run_id for spec in specs):
+            raise ValueError("all tasks of a run must share the same run_id")
+        by_id = {spec.id: spec for spec in specs}
+        ordered = [by_id[task_id] for task_id in topological_order(_nodes(specs))]
+
         run_created = self._event(
             f"run:{run_id}",
             "run.created",
@@ -154,36 +180,65 @@ class Orchestrator:
                 "repo_path": repo_path,
                 "base_commit": base_commit,
                 "target_branch": target_branch,
-                "budget": spec.budget.model_dump(),
+                "max_parallel": max_parallel,
+                "budget": budget.model_dump() if budget is not None else {},
                 "options": dict(options or {}),
             },
         )
-        task_created = self._event(
-            f"task:{spec.id}", "task.created", {"spec": spec.model_dump(mode="json")}
+        tasks_created = [
+            self._event(f"task:{spec.id}", "task.created", {"spec": spec.model_dump(mode="json")})
+            for spec in ordered
+        ]
+        graph_revised = self._event(
+            f"graph:{run_id}",
+            "graph.revised",
+            {
+                "revision": 1,
+                "tasks": [spec.id for spec in ordered],
+                "edges": [[spec.id, blocker] for spec in ordered for blocker in spec.blocked_by],
+            },
         )
-        self.store.append(
-            [run_created, task_created], expect={f"run:{run_id}": 0, f"task:{spec.id}": 0}
-        )
+        expect = {f"run:{run_id}": 0, f"graph:{run_id}": 0}
+        expect |= {f"task:{spec.id}": 0 for spec in ordered}
+        self.store.append([run_created, *tasks_created, graph_revised], expect=expect)
         return run_id
 
     async def run(self, run_id: str) -> str:
-        """Drive every task of the run until it stops; record and return the run status."""
-        for task in self.store.list_tasks(run_id):
-            while self.store.get_task(task.id).state not in STOP_STATES:
-                await self.advance(task.id)
-        states = {task.state for task in self.store.list_tasks(run_id)}
-        if states == {S.DONE}:
-            status = "done"
-        elif S.NEEDS_HUMAN in states:
-            status = "needs_human"
-        elif S.FAILED in states:
-            status = "failed"
-        else:
-            status = "cancelled"
+        """Drive the run's tasks one at a time, in dependency order, until none can move.
+
+        Each round first promotes PENDING tasks whose blockers are DONE (or cancels those with
+        a FAILED/CANCELLED blocker), then drives the first unfinished task in topological order
+        until it stops. Records `run.finished` and returns the run status.
+        """
+        order = topological_order(_nodes(t.spec for t in self.store.list_tasks(run_id)))
+        while True:
+            for task_id in order:
+                if self.store.get_task(task_id).state is S.PENDING:
+                    await self.advance(task_id)
+            current = next(
+                (t for t in order if self.store.get_task(t).state not in STOP_STATES | {S.PENDING}),
+                None,
+            )
+            if current is None:
+                break
+            while self.store.get_task(current).state not in STOP_STATES:
+                await self.advance(current)
+        status = self._run_status(run_id)
         self.store.append(
             [self._event(f"run:{run_id}", "run.finished", {"run_id": run_id, "status": status})]
         )
         return status
+
+    def _run_status(self, run_id: str) -> str:
+        states = {task.state for task in self.store.list_tasks(run_id)}
+        if states == {S.DONE}:
+            return "done"
+        # A task left PENDING here is waiting on a NEEDS_HUMAN blocker.
+        if S.NEEDS_HUMAN in states or S.PENDING in states:
+            return "needs_human"
+        if S.FAILED in states:
+            return "failed"
+        return "cancelled"
 
     async def resume(self, run_id: str) -> str:
         """Recover after a crash, then continue the run from its current state."""
@@ -195,8 +250,7 @@ class Orchestrator:
         task = self.store.get_task(task_id)
         match task.state:
             case S.PENDING:
-                # M1 runs have a single task, so there are no blockers to wait for.
-                self._transition(task, S.READY, "no blockers")
+                self._promote_or_cancel(task)
             case S.READY:
                 self._lease_and_spawn(task)
             case S.LEASED:
@@ -342,6 +396,22 @@ class Orchestrator:
 
     # --- steps ---------------------------------------------------------------------------------
 
+    def _promote_or_cancel(self, task: TaskRow) -> None:
+        """PENDING -> READY once every blocker is DONE; -> CANCELLED if a blocker failed.
+
+        A blocker in any other state (running, NEEDS_HUMAN, ...) leaves the task PENDING.
+        """
+        tasks = self.store.list_tasks(task.run_id)
+        nodes = _nodes(t.spec for t in tasks)
+        states = {t.id: t.state for t in tasks}
+        failed = blocked_by_failure(nodes, states).get(task.id)
+        if failed is not None:
+            self._transition(task, S.CANCELLED, f"blocker {failed} {states[failed].value}")
+        elif task.id in ready(nodes, states):
+            self._transition(
+                task, S.READY, "blockers done" if task.spec.blocked_by else "no blockers"
+            )
+
     def _lease_and_spawn(self, task: TaskRow) -> None:
         attempt = task.attempts + 1
         revision = task.revision + 1  # the LEASED revision: unique per lease, even on retries
@@ -378,7 +448,9 @@ class Orchestrator:
         # Later attempts get their own worktree: an earlier one may be kept after a crash.
         workspace_id = task.id if attempt == 1 else f"{task.id}-{attempt}"
         try:
-            ws = await self.workspace.create(workspace_id, str(run["base_commit"]))
+            # ADR-0013: the base is the target's head *now*, so a task sees its blockers' merges.
+            base = await self.gate.branch_head(str(run["target_branch"]))
+            ws = await self.workspace.create(workspace_id, base)
         except Exception as exc:
             self._give_up_spawn(task, f"workspace creation failed: {exc}")
             return

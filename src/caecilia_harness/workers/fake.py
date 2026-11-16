@@ -6,7 +6,7 @@ It writes fixed files into the worktree; it never calls a model or runs commands
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
@@ -23,8 +23,34 @@ from caecilia_harness.core.models import (
 )
 from caecilia_harness.workers.errors import UnknownRunHandleError
 
-#: Written when no `files` are given: the task instructions (the CLI goal) as a note.
+#: Written when no `files` are given and the task may touch the whole repo: the task
+#: instructions (the CLI goal) as a note.
 DEFAULT_FILE = "CAECILIA_FAKE.md"
+_WHOLE_REPO: tuple[list[str], ...] = (["**"], [])
+
+
+def _short_id(spec: TaskSpec) -> str:
+    """The task's id in its plan (without the `<run_id>-` prefix)."""
+    return spec.id.removeprefix(f"{spec.run_id}-")
+
+
+def default_file(spec: TaskSpec) -> str:
+    """Where the fake worker writes when no `files` are given, inside the task's write set.
+
+    Whole-repo tasks keep the M1 file. Otherwise: the first pattern if it is a literal path,
+    else `<literal prefix of the first pattern>/caecilia_fake_<plan id>.md`.
+    """
+    if spec.write_set in _WHOLE_REPO:
+        return DEFAULT_FILE
+    first = spec.write_set[0]
+    if "*" not in first and "?" not in first:
+        return first
+    prefix: list[str] = []
+    for segment in first.split("/"):
+        if "*" in segment or "?" in segment:
+            break
+        prefix.append(segment)
+    return "/".join([*prefix, f"caecilia_fake_{_short_id(spec)}.md"])
 
 
 @dataclass
@@ -34,7 +60,11 @@ class _FakeRun:
 
 
 class FakeWorker:
-    """`core.ports.WorkerAdapter` that writes `files` and reports success (or `fail_with`)."""
+    """`core.ports.WorkerAdapter` that writes `files` and reports success.
+
+    `fail_with` makes every task fail with that error; `fail_for` maps a task's plan id (the
+    end of its id) to an error, so one task of a multi-task run can fail on its own.
+    """
 
     id: str = "fake"
 
@@ -44,8 +74,10 @@ class FakeWorker:
         delay_s: float = 0.0,
         fail_with: str | None = None,
         spawn_log: Path | None = None,
+        fail_for: Mapping[str, str] | None = None,
     ) -> None:
         self.files = files
+        self.fail_for = dict(fail_for or {})
         self.delay_s = delay_s
         self.fail_with = fail_with
         self.spawn_log = spawn_log
@@ -80,15 +112,19 @@ class FakeWorker:
         return handle
 
     async def _work(self, spec: TaskSpec, worktree: Path) -> WorkerResult:
-        files = self.files if self.files is not None else {DEFAULT_FILE: spec.instructions + "\n"}
+        if self.files is not None:
+            files = self.files
+        else:
+            files = {default_file(spec): spec.instructions + "\n"}
         for rel, content in files.items():
             target = worktree / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8", newline="\n")
         if self.delay_s:
             await asyncio.sleep(self.delay_s)
-        if self.fail_with is not None:
-            return WorkerResult(task_id=spec.id, success=False, summary="", error=self.fail_with)
+        error = self.fail_for.get(_short_id(spec), self.fail_with)
+        if error is not None:
+            return WorkerResult(task_id=spec.id, success=False, summary="", error=error)
         return WorkerResult(task_id=spec.id, success=True, summary=f"wrote {', '.join(files)}")
 
     async def events(self, handle: RunHandle) -> AsyncIterator[WorkerEvent]:

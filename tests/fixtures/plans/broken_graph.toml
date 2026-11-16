@@ -1,0 +1,27 @@
+# Four problems at once: a cycle, a missing blocker, a duplicate id and a bad pattern.
+version = 1
+goal = "Graf rusak"
+
+[[task]]
+id = "a"
+title = "A"
+instructions = "a"
+blocked_by = ["b"]
+
+[[task]]
+id = "b"
+title = "B"
+instructions = "b"
+blocked_by = ["a"]
+
+[[task]]
+id = "c"
+title = "C"
+instructions = "c"
+blocked_by = ["ghost"]
+write_set = ["../outside/**"]
+
+[[task]]
+id = "c"
+title = "C lagi"
+instructions = "c"

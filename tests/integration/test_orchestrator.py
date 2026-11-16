@@ -82,7 +82,7 @@ def _spec(task_id: str = "t1") -> TaskSpec:
 
 def _create(orch: Orchestrator, repo: Path, spec: TaskSpec | None = None) -> str:
     return orch.create_run(
-        "add notes", str(repo), git(repo, "rev-parse", "main"), spec or _spec(), "main"
+        "add notes", str(repo), git(repo, "rev-parse", "main"), [spec or _spec()], "main"
     )
 
 

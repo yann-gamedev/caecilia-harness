@@ -1,0 +1,15 @@
+# Two independent tasks; `zeta` comes first in the file and must run first.
+version = 1
+goal = "Dua perubahan terpisah"
+
+[[task]]
+id = "zeta"
+title = "Docs"
+instructions = "Tulis docs."
+write_set = ["docs/notes.md"]
+
+[[task]]
+id = "alpha"
+title = "Skrip"
+instructions = "Tulis skrip."
+write_set = ["scripts/**"]

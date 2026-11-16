@@ -8,17 +8,26 @@ from __future__ import annotations
 
 import os
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from caecilia_harness import artifacts
-from caecilia_harness.core.models import Action, Event, TaskSpec, Workspace
+from caecilia_harness.core.models import Action, Event, Workspace
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
 from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, harness_home
+from caecilia_harness.planning.plan import (
+    Plan,
+    load_plan,
+    plan_id,
+    plan_to_specs,
+    run_budget,
+    single_task_plan,
+)
 from caecilia_harness.providers.deepseek import DeepSeekProvider
 from caecilia_harness.security.approval import ApprovalPolicy, Approver, ExecRequest
 from caecilia_harness.security.keys import get_api_key
@@ -34,6 +43,7 @@ from caecilia_harness.workspace.git_worktree import GitWorktreeBackend
 from caecilia_harness.workspace.sandbox import detect_sandbox
 
 WorkerKind = Literal["fake", "native"]
+WORKER_KINDS: tuple[str, ...] = ("fake", "native")
 #: Decision D2 (docs/decisions-open.md): the first provider for the native worker.
 NATIVE_PROVIDER = "deepseek"
 
@@ -103,16 +113,22 @@ def _native_worker(
 
 def _assemble(
     repo_path: Path,
-    worker_kind: WorkerKind,
+    worker_kinds: Collection[str],
     check_command: list[str],
     prompter: UserPrompter,
     auto_merge: bool,
     model: str | None = None,
     unsafe_no_sandbox: bool = False,
 ) -> tuple[Orchestrator, SqliteEventStore]:
+    """Build every worker the run's tasks refer to, then lock, open the DB and wire it up."""
+    unknown = sorted(set(worker_kinds) - set(WORKER_KINDS))
+    if unknown:
+        raise AppError(
+            f"worker tidak dikenal: {', '.join(unknown)} (tersedia: {', '.join(WORKER_KINDS)})"
+        )
     orchestrator_ref: list[Orchestrator] = []
     workers: dict[str, WorkerAdapter] = {"fake": FakeWorker(spawn_log=_fake_spawn_log())}
-    if worker_kind == "native":
+    if "native" in worker_kinds:
         # Fails here, before any lock or DB is touched, if the key or model is missing.
         workers["native"] = _native_worker(model, unsafe_no_sandbox, orchestrator_ref)
     lock = WriterLock(harness_home() / "harness.lock")
@@ -160,7 +176,7 @@ def build_orchestrator(
     `unsafe_no_sandbox` only affects the native worker's exec runner.
     """
     return _assemble(
-        repo_path, worker_kind, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+        repo_path, {worker_kind}, check_command, prompter, auto_merge, model, unsafe_no_sandbox
     )[0]
 
 
@@ -206,6 +222,9 @@ class TaskStatus:
     attempts: int
     worker: str
     summary: str
+    plan_id: str = ""
+    #: Blockers as plan ids (without the run prefix).
+    blocked_by: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -245,6 +264,54 @@ async def _target_and_base(repo: Path, target: str | None) -> tuple[str, str]:
     return target, base.text
 
 
+async def _prepare(
+    plan: Plan,
+    repo_path: Path,
+    check_command: list[str],
+    prompter: UserPrompter,
+    worker_kind: WorkerKind,
+    target: str | None,
+    auto_merge: bool,
+    unsafe_no_sandbox: bool,
+    model: str | None,
+) -> PreparedRun:
+    if not check_command:
+        raise AppError("check command tidak boleh kosong")
+    repo = await _repo_root(repo_path)
+    # The CLI's --target wins over the plan's target.
+    target, base = await _target_and_base(repo, target or plan.target)
+    run_id = uuid.uuid4().hex[:10]
+    specs = plan_to_specs(plan, run_id, default_worker=worker_kind)
+    worker_kinds = sorted({spec.worker for spec in specs})
+    orchestrator, store = _assemble(
+        repo, worker_kinds, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+    )
+    try:
+        await orchestrator.recover()
+        options: dict[str, Any] = {
+            "check_command": list(check_command),
+            "worker_kind": worker_kind,
+            "worker_kinds": worker_kinds,
+            "auto_merge": auto_merge,
+            "unsafe_no_sandbox": unsafe_no_sandbox,
+            "model": model,
+        }
+        orchestrator.create_run(
+            plan.goal,
+            str(repo),
+            base,
+            specs,
+            target,
+            options,
+            max_parallel=plan.max_parallel,
+            budget=run_budget(plan),
+        )
+    except BaseException:
+        orchestrator.close()
+        raise
+    return PreparedRun(orchestrator, run_id, store)
+
+
 async def prepare_run(
     goal: str,
     repo_path: Path,
@@ -257,45 +324,55 @@ async def prepare_run(
     idempotent: bool = True,
     model: str | None = None,
 ) -> PreparedRun:
-    """Create a run with one task for `goal`.
+    """Create a run with one task for `goal` (a one-task plan, see `single_task_plan`).
 
     `idempotent=False` marks the task as unsafe to re-run automatically after a crash.
-
-    Base commit = HEAD of `target` (default: the branch checked out in the repo). Anything a
-    crashed run left behind is recovered first.
+    Anything a crashed run left behind is recovered first.
     """
     if not goal.strip():
         raise AppError("goal tidak boleh kosong")
-    if not check_command:
-        raise AppError("check command tidak boleh kosong")
-    repo = await _repo_root(repo_path)
-    target, base = await _target_and_base(repo, target)
-    orchestrator, store = _assemble(
-        repo, worker_kind, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+    plan = single_task_plan(goal, idempotent=idempotent)
+    return await _prepare(
+        plan,
+        repo_path,
+        check_command,
+        prompter,
+        worker_kind,
+        target,
+        auto_merge,
+        unsafe_no_sandbox,
+        model,
     )
-    try:
-        await orchestrator.recover()
-        run_id = uuid.uuid4().hex[:10]
-        spec = TaskSpec(
-            id=f"{run_id}-1",
-            run_id=run_id,
-            title=goal if len(goal) <= 80 else goal[:77] + "...",
-            instructions=goal,
-            worker=worker_kind,
-            idempotent=idempotent,
-        )
-        options: dict[str, Any] = {
-            "check_command": list(check_command),
-            "worker_kind": worker_kind,
-            "auto_merge": auto_merge,
-            "unsafe_no_sandbox": unsafe_no_sandbox,
-            "model": model,
-        }
-        orchestrator.create_run(goal, str(repo), base, spec, target, options)
-    except BaseException:
-        orchestrator.close()
-        raise
-    return PreparedRun(orchestrator, run_id, store)
+
+
+async def prepare_run_from_plan(
+    plan_path: Path,
+    repo_path: Path,
+    check_command: list[str],
+    prompter: UserPrompter,
+    worker_kind: WorkerKind = "native",
+    target: str | None = None,
+    auto_merge: bool = False,
+    unsafe_no_sandbox: bool = False,
+    model: str | None = None,
+) -> PreparedRun:
+    """Create a run from a `plan.toml` (`PlanError` lists every problem in it).
+
+    `worker_kind` is the default for tasks that do not name a worker; `target` overrides the
+    plan's target. Every worker the tasks refer to is built (e.g. fake and native together).
+    """
+    plan = load_plan(plan_path)
+    return await _prepare(
+        plan,
+        repo_path,
+        check_command,
+        prompter,
+        worker_kind,
+        target,
+        auto_merge,
+        unsafe_no_sandbox,
+        model,
+    )
 
 
 async def resume_run(
@@ -311,7 +388,7 @@ async def resume_run(
     options = created.get("options") or {}
     orchestrator, store = _assemble(
         Path(created["repo_path"]),
-        options.get("worker_kind", "fake"),
+        options.get("worker_kinds") or [options.get("worker_kind", "fake")],
         list(options.get("check_command") or []),
         prompter,
         bool(options.get("auto_merge", False)),
@@ -390,6 +467,8 @@ def get_run_status(run_id: str | None = None) -> RunStatus | None:
                 attempts=task.attempts,
                 worker=task.spec.worker,
                 summary=_last_summary(store.read_stream(f"task:{task.id}")),
+                plan_id=plan_id(task.id, run.id),
+                blocked_by=[plan_id(blocker, run.id) for blocker in task.spec.blocked_by],
             )
             for task in store.list_tasks(run.id)
         ]

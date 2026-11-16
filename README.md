@@ -43,6 +43,42 @@ uv run caecilia resume            # lanjutkan run yang belum selesai setelah cra
 - `--plain` mematikan warna untuk log dan CI.
 - Hanya satu `caecilia run`/`resume` yang boleh berjalan sekaligus; yang kedua ditolak.
 
+### Run dengan banyak task (`plan.toml`)
+
+Untuk tujuan yang terdiri dari beberapa task dengan dependensi, tulis file plan (format lengkap di
+`docs/architecture.md`, bagian "Rencana run dan penjadwalan paralel"):
+
+```toml
+version = 1
+goal = "Endpoint lalu halaman"
+
+[[task]]
+id = "api"
+title = "Endpoint"
+instructions = "Tulis endpoint /health."
+write_set = ["api/**"]
+
+[[task]]
+id = "web"
+title = "Halaman"
+instructions = "Tampilkan hasil /health."
+write_set = ["web/**"]
+blocked_by = ["api"]
+```
+
+```sh
+uv run caecilia plan validate plan.toml     # periksa offline; semua masalah dicetak sekaligus
+uv run caecilia run --plan plan.toml --repo PATH --check "uv run pytest" --worker fake --auto-merge
+```
+
+- `caecilia run` menerima **tepat satu** dari `GOAL` atau `--plan FILE`.
+- Task dijalankan satu per satu dalam urutan dependensi (paralel menyusul di M2). Task baru dimulai
+  dari head branch target saat itu, jadi ia sudah melihat hasil merge blocker-nya.
+- Blocker gagal atau dibatalkan → task yang bergantung padanya dibatalkan. Blocker NEEDS_HUMAN → task
+  yang bergantung tetap menunggu dan run berhenti dengan exit `2`.
+- `--worker` menjadi default untuk task yang tidak menyebut `worker`; `--target` mengalahkan `target`
+  di plan. `caecilia status` menampilkan kolom `BLOCKED_BY`.
+
 ### Worker native (model sungguhan)
 
 Provider pertama adalah DeepSeek, lewat API resminya dengan **API key** (ADR-0007). Harness tidak
