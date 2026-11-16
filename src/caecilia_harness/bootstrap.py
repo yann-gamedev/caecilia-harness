@@ -14,25 +14,28 @@ from pathlib import Path
 from typing import Any, Literal
 
 from caecilia_harness import artifacts
-from caecilia_harness.core.models import Action, Event, TaskSpec
+from caecilia_harness.core.models import Action, Event, TaskSpec, Workspace
 from caecilia_harness.core.orchestrator import Orchestrator
-from caecilia_harness.core.ports import UserPrompter
+from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
 from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, harness_home
-from caecilia_harness.security.approval import Approver, ExecRequest
+from caecilia_harness.providers.deepseek import DeepSeekProvider
+from caecilia_harness.security.approval import ApprovalPolicy, Approver, ExecRequest
+from caecilia_harness.security.keys import get_api_key
 from caecilia_harness.store.db import open_db, open_readonly
 from caecilia_harness.store.events import SqliteEventStore
 from caecilia_harness.store.lock import WriterLock
 from caecilia_harness.store.projections import project_runs_and_tasks
 from caecilia_harness.workers.fake import FakeWorker
+from caecilia_harness.workers.native.worker import NativeWorker
+from caecilia_harness.workspace.exec_runner import ExecRunner
 from caecilia_harness.workspace.git import GitError, run_git
 from caecilia_harness.workspace.git_worktree import GitWorktreeBackend
+from caecilia_harness.workspace.sandbox import detect_sandbox
 
 WorkerKind = Literal["fake", "native"]
-
-
-class ProviderNotConfiguredError(RuntimeError):
-    """The native worker needs a model provider, which is not chosen yet."""
+#: Decision D2 (docs/decisions-open.md): the first provider for the native worker.
+NATIVE_PROVIDER = "deepseek"
 
 
 class AppError(Exception):
@@ -65,18 +68,53 @@ def _fake_spawn_log() -> Path | None:
     return Path(value) if value else None
 
 
+def make_provider(api_key: str) -> ModelProvider:
+    """Build the model provider for the native worker (decision D2: DeepSeek).
+
+    A separate function so tests can substitute a provider with a recorded transport.
+    """
+    return DeepSeekProvider(api_key)
+
+
+def _native_worker(
+    model: str | None, unsafe_no_sandbox: bool, orchestrator_ref: list[Orchestrator]
+) -> NativeWorker:
+    if not model:
+        raise AppError("--model wajib diisi untuk --worker native (nama model di provider)")
+    provider = make_provider(get_api_key(NATIVE_PROVIDER))
+    sandbox = detect_sandbox()
+
+    async def approve(req: ExecRequest) -> bool:
+        # Late-bound: the orchestrator is created after its workers.
+        return await exec_approver(orchestrator_ref[0])(req)
+
+    def runner_for(ws: Workspace) -> ExecRunner:
+        return ExecRunner(
+            Path(ws.path),
+            ApprovalPolicy(),  # ADR-0008: every command is asked about by default
+            approve,
+            sandbox,
+            unsafe_no_sandbox=unsafe_no_sandbox,
+            task_id=ws.task_id,
+        )
+
+    return NativeWorker(provider, model, runner_for)
+
+
 def _assemble(
     repo_path: Path,
     worker_kind: WorkerKind,
     check_command: list[str],
     prompter: UserPrompter,
     auto_merge: bool,
+    model: str | None = None,
+    unsafe_no_sandbox: bool = False,
 ) -> tuple[Orchestrator, SqliteEventStore]:
+    orchestrator_ref: list[Orchestrator] = []
+    workers: dict[str, WorkerAdapter] = {"fake": FakeWorker(spawn_log=_fake_spawn_log())}
     if worker_kind == "native":
-        raise ProviderNotConfiguredError(
-            "the native worker needs a model provider, which has not been chosen yet "
-            "(open decision D2 in docs/decisions-open.md); use --worker fake for now"
-        )
+        # Fails here, before any lock or DB is touched, if the key or model is missing.
+        workers["native"] = _native_worker(model, unsafe_no_sandbox, orchestrator_ref)
     lock = WriterLock(harness_home() / "harness.lock")
     lock.acquire()
     try:
@@ -93,7 +131,7 @@ def _assemble(
             store,
             GitWorktreeBackend(repo_path),
             gate,
-            {"fake": FakeWorker(spawn_log=_fake_spawn_log())},
+            workers,
             prompter,
             artifact_info=artifact_info,
             closers=[conn.close, lock.release],
@@ -102,6 +140,7 @@ def _assemble(
         conn.close()
         lock.release()
         raise
+    orchestrator_ref.append(orchestrator)
     return orchestrator, store
 
 
@@ -112,13 +151,17 @@ def build_orchestrator(
     prompter: UserPrompter,
     auto_merge: bool = False,
     unsafe_no_sandbox: bool = False,
+    model: str | None = None,
 ) -> Orchestrator:
     """Assemble store, workspace backend, gate and worker. Call `close()` on the result.
 
     Takes the single-writer lock first: a second orchestrator fails with `WriterLockedError`.
-    `unsafe_no_sandbox` only matters for the native worker's exec runner (prompt 14).
+    `worker_kind="native"` needs `model` and a stored API key (`MissingApiKeyError` otherwise);
+    `unsafe_no_sandbox` only affects the native worker's exec runner.
     """
-    return _assemble(repo_path, worker_kind, check_command, prompter, auto_merge)[0]
+    return _assemble(
+        repo_path, worker_kind, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+    )[0]
 
 
 # --- application functions (shared by the CLI now and TUI/GUI later, ADR-0012) ---------------
@@ -212,6 +255,7 @@ async def prepare_run(
     auto_merge: bool = False,
     unsafe_no_sandbox: bool = False,
     idempotent: bool = True,
+    model: str | None = None,
 ) -> PreparedRun:
     """Create a run with one task for `goal`.
 
@@ -226,7 +270,9 @@ async def prepare_run(
         raise AppError("check command tidak boleh kosong")
     repo = await _repo_root(repo_path)
     target, base = await _target_and_base(repo, target)
-    orchestrator, store = _assemble(repo, worker_kind, check_command, prompter, auto_merge)
+    orchestrator, store = _assemble(
+        repo, worker_kind, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+    )
     try:
         await orchestrator.recover()
         run_id = uuid.uuid4().hex[:10]
@@ -243,6 +289,7 @@ async def prepare_run(
             "worker_kind": worker_kind,
             "auto_merge": auto_merge,
             "unsafe_no_sandbox": unsafe_no_sandbox,
+            "model": model,
         }
         orchestrator.create_run(goal, str(repo), base, spec, target, options)
     except BaseException:
@@ -268,6 +315,8 @@ async def resume_run(
         list(options.get("check_command") or []),
         prompter,
         bool(options.get("auto_merge", False)),
+        options.get("model"),
+        unsafe_no_sandbox or bool(options.get("unsafe_no_sandbox", False)),
     )
     try:
         await orchestrator.recover()
@@ -350,9 +399,13 @@ def get_run_status(run_id: str | None = None) -> RunStatus | None:
 
 
 def _last_summary(events: list[Event]) -> str:
-    for event in reversed(events):
-        if event.type == "worker.result":
-            return str(event.payload.get("summary") or event.payload.get("error") or "")
-        if event.type == "task.state_changed" and event.payload.get("reason"):
-            return str(event.payload["reason"])
-    return ""
+    """What happened last: the worker's own summary once DONE, else why the task is where it is."""
+    changes = [event for event in events if event.type == "task.state_changed"]
+    if not changes:
+        return ""
+    last = changes[-1].payload
+    if last.get("to_state") == "DONE":
+        for event in reversed(events):
+            if event.type == "worker.result" and event.payload.get("summary"):
+                return str(event.payload["summary"])
+    return str(last.get("reason") or "")

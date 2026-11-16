@@ -9,13 +9,14 @@ from pathlib import Path
 import pytest
 
 from caecilia_harness.artifacts import read_bytes
-from caecilia_harness.bootstrap import ProviderNotConfiguredError, artifact_info, build_orchestrator
+from caecilia_harness.bootstrap import AppError, artifact_info, build_orchestrator
 from caecilia_harness.core.models import Action, GateReport, TaskSpec
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import UserPrompter
 from caecilia_harness.core.states import TaskState
 from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, worktrees_dir
+from caecilia_harness.security.keys import MissingApiKeyError
 from caecilia_harness.store.db import open_db
 from caecilia_harness.store.events import SqliteEventStore
 from caecilia_harness.store.projections import project_runs_and_tasks, rebuild_projections
@@ -275,6 +276,10 @@ async def test_bootstrap_fake_run(git_repo: Path) -> None:
         orch.close()
 
 
-def test_bootstrap_native_needs_provider_decision(git_repo: Path) -> None:
-    with pytest.raises(ProviderNotConfiguredError, match="D2"):
+def test_bootstrap_native_needs_model_and_key(git_repo: Path) -> None:
+    with pytest.raises(AppError, match="--model"):
         build_orchestrator(git_repo, "native", PASS, FakePrompter())
+    with pytest.raises(MissingApiKeyError, match="caecilia key set deepseek"):
+        build_orchestrator(git_repo, "native", PASS, FakePrompter(), model="some-model")
+    # Neither failure left the writer lock or the database behind.
+    build_orchestrator(git_repo, "fake", PASS, FakePrompter()).close()

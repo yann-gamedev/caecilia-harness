@@ -1,0 +1,10 @@
+{
+  "_comment": "Hand-written from the documented DeepSeek chat-completion stream format (api-docs.deepseek.com/api/create-chat-completion). Not a capture of a real response; contains no key or auth header.",
+  "status": 200,
+  "chunks": [
+    {"id": "rec-text", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-text", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"content": "Selesai: "}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-text", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"content": "NOTES.md ditulis."}, "logprobs": null, "finish_reason": null}], "usage": null},
+    {"id": "rec-text", "object": "chat.completion.chunk", "created": 1763251200, "model": "recorded-model", "choices": [{"index": 0, "delta": {"content": ""}, "logprobs": null, "finish_reason": "stop"}], "usage": {"prompt_tokens": 120, "completion_tokens": 9, "total_tokens": 129}}
+  ]
+}

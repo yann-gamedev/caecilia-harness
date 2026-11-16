@@ -1,0 +1,5 @@
+{
+  "_comment": "Hand-written error body in the documented shape (api-docs.deepseek.com/quick_start/error_codes): 429 Rate Limit Reached.",
+  "status": 429,
+  "body": {"error": {"message": "Rate limit reached for requests", "type": "rate_limit_error", "param": null, "code": "rate_limit_exceeded"}}
+}

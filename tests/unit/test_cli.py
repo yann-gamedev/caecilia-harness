@@ -12,6 +12,7 @@ from caecilia_harness.interfaces.cli import app, exit_code_for, parse_check
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event
 from caecilia_harness.security.approval import ApprovalPolicy
+from tests.conftest import MemoryKeyring
 
 runner = CliRunner()
 
@@ -142,3 +143,39 @@ def test_format_event_plain() -> None:
 def test_format_event_color() -> None:
     line = format_event(_event("gate.failed", {"report": {"output_tail": "boom"}}), plain=False)
     assert "\x1b[" in line
+
+
+# --- key commands ---------------------------------------------------------------------------------
+
+CANARY = "sk-test-CANARY"
+
+
+def test_key_set_stores_in_keyring_without_echoing(memory_keyring: MemoryKeyring) -> None:
+    result = runner.invoke(app, ["key", "set", "deepseek"], input=f"{CANARY}\n")
+    assert result.exit_code == 0, result.output
+    assert memory_keyring.passwords == {("caecilia-harness", "deepseek"): CANARY}
+    assert CANARY not in result.output
+
+
+def test_key_status_shows_presence_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    missing = runner.invoke(app, ["key", "status"])
+    assert missing.exit_code == 0
+    assert "deepseek" in missing.output and "tidak ada" in missing.output
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", CANARY)
+    from_env = runner.invoke(app, ["key", "status"])
+    assert "DEEPSEEK_API_KEY" in from_env.output
+    assert CANARY not in from_env.output
+
+    runner.invoke(app, ["key", "set", "deepseek"], input=f"{CANARY}\n")
+    stored = runner.invoke(app, ["key", "status"])
+    assert "keychain" in stored.output
+    assert CANARY not in stored.output
+
+
+def test_key_set_rejects_unknown_provider_and_empty_key(memory_keyring: MemoryKeyring) -> None:
+    unknown = runner.invoke(app, ["key", "set", "nope"], input="x\n")
+    assert unknown.exit_code == 1 and "tidak dikenal" in unknown.output
+    empty = runner.invoke(app, ["key", "set", "deepseek"], input="   \n")
+    assert empty.exit_code == 1
+    assert memory_keyring.passwords == {}

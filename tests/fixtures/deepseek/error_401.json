@@ -1,0 +1,5 @@
+{
+  "_comment": "Hand-written error body in the documented shape: 401 Authentication Fails. The replay helper can append the request's own key to the message to prove it gets redacted; the file itself contains no key.",
+  "status": 401,
+  "body": {"error": {"message": "Authentication Fails, your api key is invalid", "type": "authentication_error", "param": null, "code": "invalid_request_error"}}
+}

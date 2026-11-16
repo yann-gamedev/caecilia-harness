@@ -23,7 +23,6 @@ from caecilia_harness import __version__
 from caecilia_harness.bootstrap import (
     AppError,
     PreparedRun,
-    ProviderNotConfiguredError,
     get_run_status,
     list_runs,
     prepare_run,
@@ -33,6 +32,7 @@ from caecilia_harness.core.orchestrator import OrchestratorError
 from caecilia_harness.interfaces.doctor import run_all
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event, format_runs, format_status
+from caecilia_harness.security import keys
 from caecilia_harness.store.lock import WriterLockedError
 
 app = typer.Typer(
@@ -45,7 +45,7 @@ app = typer.Typer(
 _MARK = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[FAIL]"}
 _POLL_S = 0.2
 _EXIT = {"done": 0, "needs_human": 2}
-_USER_ERRORS = (AppError, ProviderNotConfiguredError, WriterLockedError, OrchestratorError)
+_USER_ERRORS = (AppError, keys.MissingApiKeyError, WriterLockedError, OrchestratorError)
 
 
 class WorkerChoice(StrEnum):
@@ -77,7 +77,7 @@ def parse_check(cmd: str, posix: bool | None = None) -> list[str]:
 
 
 def _fail(message: str) -> typer.Exit:
-    typer.echo(f"Error: {message}", err=True)
+    typer.echo(f"Error: {keys.redact(message)}", err=True)
     return typer.Exit(code=1)
 
 
@@ -179,6 +179,10 @@ def run(
         bool,
         typer.Option("--unsafe-no-sandbox", help="Izinkan exec tanpa sandbox (ADR-0008)."),
     ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Nama model di provider (wajib untuk --worker native)."),
+    ] = None,
     plain: PlainOpt = False,
 ) -> None:
     """Start a run with one task. Exit code: 0 = DONE, 2 = NEEDS_HUMAN, 1 = otherwise."""
@@ -194,6 +198,7 @@ def run(
         target=target,
         auto_merge=auto_merge,
         unsafe_no_sandbox=unsafe_no_sandbox,
+        model=model,
     )
     try:
         status = asyncio.run(_drive(start, plain))
@@ -252,6 +257,32 @@ def runs(
         return
     for line in format_runs(found, plain):
         typer.echo(line)
+
+
+key_app = typer.Typer(help="Kelola API key provider model (disimpan di keychain OS).")
+app.add_typer(key_app, name="key")
+
+
+@key_app.command("set")
+def key_set(
+    provider: Annotated[str, typer.Argument(help="Provider, mis. deepseek.")],
+) -> None:
+    """Store a provider API key in the OS keychain (input is hidden)."""
+    try:
+        keys.key_source(provider)  # validates the provider name before asking for the key
+        secret = typer.prompt(f"API key untuk {provider}", hide_input=True)
+        keys.set_api_key(provider, secret)
+    except (keys.UnknownProviderError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"API key {provider} disimpan di keychain OS.")
+
+
+@key_app.command("status")
+def key_status() -> None:
+    """Show whether a key exists for each provider. Never prints the key itself."""
+    labels = {"keyring": "ada (keychain OS)", "env": "ada (variabel env {env})", None: "tidak ada"}
+    for provider, env_var in sorted(keys.ENV_VARS.items()):
+        typer.echo(f"{provider:<10} {labels[keys.key_source(provider)].format(env=env_var)}")
 
 
 if __name__ == "__main__":
