@@ -26,7 +26,7 @@ from caecilia_harness.workers.errors import UnknownRunHandleError
 #: Written when no `files` are given and the task may touch the whole repo: the task
 #: instructions (the CLI goal) as a note.
 DEFAULT_FILE = "CAECILIA_FAKE.md"
-_WHOLE_REPO = (["**"], [])
+_WHOLE_REPO: tuple[list[str], ...] = (["**"], [])
 
 
 def _short_id(spec: TaskSpec) -> str:
