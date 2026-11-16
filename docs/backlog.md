@@ -45,7 +45,7 @@ Checklist:
 - [x] M1-10
 - [x] M1-11
 - [x] M1-12
-- [ ] M1-13
+- [x] M1-13
 - [ ] M1-14
 
 ## M2–M7 (kasar; dipecah jadi prompt setelah M1 selesai dan disetujui pemilik)
@@ -103,3 +103,4 @@ Checklist:
 - 2026-11-11 — M1-10 selesai: `Orchestrator` (run loop satu task, CAS per stream, outbox `spawn_worker`, gate dengan `gate.merging`, rework/retry), `FakeWorker`, `bootstrap.build_orchestrator`; port `Gate.check` kini menerima `before_merge`.
 - 2026-11-11 — M1-11 selesai: `WriterLock`, lease task (acquire/renew/release/expire), heartbeat, `recover()`/`resume()` per state; worktree attempt ke-2 dst. bernama `<task>-<attempt>`; port `Gate.branch_head`.
 - 2026-11-11 — M1-12 selesai: CLI `run`/`resume`/`status`/`runs`, `TerminalPrompter`, fungsi aplikasi di `bootstrap.py`; opsi run disimpan di `run.created` untuk `resume`.
+- 2026-11-16 — M1-13 selesai: hook `CAECILIA_TEST_HOLD_AT` dan suite chaos (kill proses di 7 titik lalu `resume`); tidak ada bug recovery yang ditemukan.
