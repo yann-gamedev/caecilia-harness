@@ -6,6 +6,7 @@ later) call functions here instead of assembling components themselves (ADR-0012
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -58,6 +59,12 @@ def exec_approver(orchestrator: Orchestrator) -> Approver:
     return approve
 
 
+def _fake_spawn_log() -> Path | None:
+    # Chaos suite only: lets tests count worker starts across killed processes.
+    value = os.environ.get("CAECILIA_FAKE_SPAWN_LOG")
+    return Path(value) if value else None
+
+
 def _assemble(
     repo_path: Path,
     worker_kind: WorkerKind,
@@ -86,7 +93,7 @@ def _assemble(
             store,
             GitWorktreeBackend(repo_path),
             gate,
-            {"fake": FakeWorker()},
+            {"fake": FakeWorker(spawn_log=_fake_spawn_log())},
             prompter,
             artifact_info=artifact_info,
             closers=[conn.close, lock.release],
@@ -204,8 +211,11 @@ async def prepare_run(
     target: str | None = None,
     auto_merge: bool = False,
     unsafe_no_sandbox: bool = False,
+    idempotent: bool = True,
 ) -> PreparedRun:
     """Create a run with one task for `goal`.
+
+    `idempotent=False` marks the task as unsafe to re-run automatically after a crash.
 
     Base commit = HEAD of `target` (default: the branch checked out in the repo). Anything a
     crashed run left behind is recovered first.
@@ -226,6 +236,7 @@ async def prepare_run(
             title=goal if len(goal) <= 80 else goal[:77] + "...",
             instructions=goal,
             worker=worker_kind,
+            idempotent=idempotent,
         )
         options: dict[str, Any] = {
             "check_command": list(check_command),
