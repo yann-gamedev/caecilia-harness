@@ -67,10 +67,15 @@ def test_failing_check_exits_2_needs_human(git_repo: Path) -> None:
     assert status.tasks[0].attempts == 3
 
 
-def test_native_worker_points_to_decision_d2(git_repo: Path) -> None:
-    result = _run(git_repo, "--worker", "native", "--plain")
-    assert result.exit_code == 1
-    assert "D2" in result.output  # type: ignore[attr-defined]
+def test_native_worker_without_model_or_key_explains_what_is_missing(git_repo: Path) -> None:
+    no_model = _run(git_repo, "--worker", "native", "--plain")
+    assert no_model.exit_code == 1  # type: ignore[attr-defined]
+    assert "--model" in no_model.output  # type: ignore[attr-defined]
+
+    no_key = _run(git_repo, "--worker", "native", "--model", "some-model", "--plain")
+    assert no_key.exit_code == 1  # type: ignore[attr-defined]
+    assert "caecilia key set deepseek" in no_key.output  # type: ignore[attr-defined]
+    assert list_runs() == []  # nothing was created
 
 
 def test_not_a_git_repo(tmp_path: Path) -> None:

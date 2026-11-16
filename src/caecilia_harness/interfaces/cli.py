@@ -23,7 +23,6 @@ from caecilia_harness import __version__
 from caecilia_harness.bootstrap import (
     AppError,
     PreparedRun,
-    ProviderNotConfiguredError,
     get_run_status,
     list_runs,
     prepare_run,
@@ -46,7 +45,7 @@ app = typer.Typer(
 _MARK = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[FAIL]"}
 _POLL_S = 0.2
 _EXIT = {"done": 0, "needs_human": 2}
-_USER_ERRORS = (AppError, ProviderNotConfiguredError, WriterLockedError, OrchestratorError)
+_USER_ERRORS = (AppError, keys.MissingApiKeyError, WriterLockedError, OrchestratorError)
 
 
 class WorkerChoice(StrEnum):
@@ -78,7 +77,7 @@ def parse_check(cmd: str, posix: bool | None = None) -> list[str]:
 
 
 def _fail(message: str) -> typer.Exit:
-    typer.echo(f"Error: {message}", err=True)
+    typer.echo(f"Error: {keys.redact(message)}", err=True)
     return typer.Exit(code=1)
 
 
@@ -180,6 +179,10 @@ def run(
         bool,
         typer.Option("--unsafe-no-sandbox", help="Izinkan exec tanpa sandbox (ADR-0008)."),
     ] = False,
+    model: Annotated[
+        str | None,
+        typer.Option("--model", help="Nama model di provider (wajib untuk --worker native)."),
+    ] = None,
     plain: PlainOpt = False,
 ) -> None:
     """Start a run with one task. Exit code: 0 = DONE, 2 = NEEDS_HUMAN, 1 = otherwise."""
@@ -195,6 +198,7 @@ def run(
         target=target,
         auto_merge=auto_merge,
         unsafe_no_sandbox=unsafe_no_sandbox,
+        model=model,
     )
     try:
         status = asyncio.run(_drive(start, plain))
