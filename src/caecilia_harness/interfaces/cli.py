@@ -33,6 +33,7 @@ from caecilia_harness.core.orchestrator import OrchestratorError
 from caecilia_harness.interfaces.doctor import run_all
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event, format_runs, format_status
+from caecilia_harness.security import keys
 from caecilia_harness.store.lock import WriterLockedError
 
 app = typer.Typer(
@@ -252,6 +253,32 @@ def runs(
         return
     for line in format_runs(found, plain):
         typer.echo(line)
+
+
+key_app = typer.Typer(help="Kelola API key provider model (disimpan di keychain OS).")
+app.add_typer(key_app, name="key")
+
+
+@key_app.command("set")
+def key_set(
+    provider: Annotated[str, typer.Argument(help="Provider, mis. deepseek.")],
+) -> None:
+    """Store a provider API key in the OS keychain (input is hidden)."""
+    try:
+        keys.key_source(provider)  # validates the provider name before asking for the key
+        secret = typer.prompt(f"API key untuk {provider}", hide_input=True)
+        keys.set_api_key(provider, secret)
+    except (keys.UnknownProviderError, ValueError) as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"API key {provider} disimpan di keychain OS.")
+
+
+@key_app.command("status")
+def key_status() -> None:
+    """Show whether a key exists for each provider. Never prints the key itself."""
+    labels = {"keyring": "ada (keychain OS)", "env": "ada (variabel env {env})", None: "tidak ada"}
+    for provider, env_var in sorted(keys.ENV_VARS.items()):
+        typer.echo(f"{provider:<10} {labels[keys.key_source(provider)].format(env=env_var)}")
 
 
 if __name__ == "__main__":
