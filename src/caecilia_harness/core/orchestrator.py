@@ -146,6 +146,7 @@ class Orchestrator:
         self._workspaces: dict[str, Workspace] = {}
         self._outbox_in_flight: set[int] = set()
         self._merge_slot = asyncio.Lock()
+        self._worker_slot_freed = asyncio.Event()
 
     def close(self) -> None:
         """Release resources handed over by bootstrap (DB connection, writer lock)."""
@@ -221,7 +222,8 @@ class Orchestrator:
         promotes or cancels PENDING tasks, gives every task already in flight (e.g. after
         recovery) a driver, and leases READY tasks in topological order while fewer than
         `max_parallel` are LEASED/RUNNING and the write set conflicts with no busy task. It then
-        waits for any driver to finish. If a driver fails unexpectedly, every other driver and
+        waits for any driver to finish or release a worker slot. If a driver fails unexpectedly,
+        every other driver and
         worker is cancelled and the error is raised; `resume` tidies up from the event log.
         Records `run.finished` and returns the run status.
         """
@@ -232,12 +234,19 @@ class Orchestrator:
         drivers: dict[str, asyncio.Task[None]] = {}
         try:
             while True:
+                self._worker_slot_freed.clear()
                 self._schedule(run_id, order, write_sets, limit, drivers)
                 if not drivers:
                     break
-                finished, _ = await asyncio.wait(
-                    drivers.values(), return_when=asyncio.FIRST_COMPLETED
-                )
+                # Drivers may wait at the gate indefinitely after releasing their worker slot.
+                slot_freed = asyncio.create_task(self._worker_slot_freed.wait())
+                try:
+                    finished, _ = await asyncio.wait(
+                        [*drivers.values(), slot_freed], return_when=asyncio.FIRST_COMPLETED
+                    )
+                finally:
+                    slot_freed.cancel()
+                    await asyncio.gather(slot_freed, return_exceptions=True)
                 for task_id, driver in list(drivers.items()):
                     if driver in finished:
                         del drivers[task_id]
@@ -304,11 +313,14 @@ class Orchestrator:
 
     async def _abort(self, drivers: Mapping[str, asyncio.Task[None]]) -> None:
         """Stop everything this run started, so no worker or coroutine outlives `run()`."""
-        with contextlib.suppress(Exception):
-            await self.cancel_all("hard")
+        # Stop spawns first: no driver may register another worker during cancellation.
         for driver in drivers.values():
             driver.cancel()
         await asyncio.gather(*drivers.values(), return_exceptions=True)
+        for live in list(self._live.values()):
+            # Cleanup must reach every worker and preserve the original driver error.
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await live.worker.cancel(live.handle, "hard")
         for live in list(self._live.values()):
             with contextlib.suppress(Exception, asyncio.CancelledError):
                 await live.worker.result(live.handle)
@@ -742,6 +754,8 @@ class Orchestrator:
         )
         event = self._event(f"task:{task.id}", "task.state_changed", change.model_dump(mode="json"))
         self._append_task(task.id, [*before, event, *after], outbox)
+        if task.state in _HOLDS_WORKER_SLOT and to not in _HOLDS_WORKER_SLOT:
+            self._worker_slot_freed.set()
         _chaos_hold(to.value)
         return self.store.get_task(task.id)
 

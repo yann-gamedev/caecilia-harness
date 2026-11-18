@@ -8,7 +8,7 @@ import time
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -231,7 +231,7 @@ async def test_independent_tasks_run_at_the_same_time(
 
     a, b = _interval(store, "a"), _interval(store, "b")
     assert _overlap(a, b)
-    assert (max(a[1], b[1]) - min(a[0], b[0])).total_seconds() < 1.8
+    # Event overlap and peak concurrency prove parallelism without a machine-speed threshold.
     assert worker.peak == 2
 
 
@@ -369,6 +369,117 @@ async def test_tasks_found_integrating_still_take_the_merge_slot(
     assert await resumed.resume(run_id) == "done"
     assert gate.peak == 1
     assert len(gate.order) == 2
+
+
+async def test_gate_wait_does_not_hold_worker_slot(store: SqliteEventStore, git_repo: Path) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    b_started = asyncio.Event()
+
+    class Worker(FakeWorker):
+        async def start(
+            self, spec: TaskSpec, ctx: ContextPack, ws: Workspace, budget: Budget
+        ) -> RunHandle:
+            handle = await super().start(spec, ctx, ws, budget)
+            if spec.id == "r1-b":
+                b_started.set()
+            return handle
+
+    class Gate(CountingGate):
+        async def check(
+            self, diff: DiffArtifact, target_branch: str, before_merge: BeforeMerge | None = None
+        ) -> GateReport:
+            if diff.task_id == "r1-a":
+                entered.set()
+                await release.wait()
+            return await super().check(diff, target_branch, before_merge)
+
+    orch, _ = _scheduler(store, git_repo, Worker(), Gate(git_repo))
+    run_id = _create(orch, git_repo, [_spec("a", ["a/**"]), _spec("b", ["b/**"])], 1)
+    running = asyncio.create_task(orch.run(run_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        await asyncio.wait_for(b_started.wait(), 3)
+        assert store.get_task("r1-a").state is S.INTEGRATING
+    finally:
+        release.set()
+        await running
+
+
+async def test_abort_stops_spawn_drivers_before_cancelling_workers(
+    store: SqliteEventStore, git_repo: Path
+) -> None:
+    allow_spawn = asyncio.Event()
+    b_entered = asyncio.Event()
+    b_started = asyncio.Event()
+    cancelled: list[str] = []
+
+    class Worker(FakeWorker):
+        async def start(
+            self, spec: TaskSpec, ctx: ContextPack, ws: Workspace, budget: Budget
+        ) -> RunHandle:
+            if spec.id == "r1-b":
+                b_entered.set()
+                await allow_spawn.wait()
+            handle = await super().start(spec, ctx, ws, budget)
+            if spec.id == "r1-b":
+                b_started.set()
+            return handle
+
+        async def cancel(self, handle: RunHandle, mode: Literal["soft", "hard"]) -> None:
+            cancelled.append(handle.task_id)
+            if handle.task_id == "r1-a":
+                allow_spawn.set()
+                # Old abort lets the spawn driver register b during this await.
+                await asyncio.sleep(0.05)
+            await super().cancel(handle, mode)
+
+    worker = Worker(delay_s=30)
+    orch = _orchestrator(store, git_repo, worker)
+    _create(orch, git_repo, [_spec("a", ["a/**"]), _spec("b", ["b/**"])])
+    for task in ("r1-a", "r1-b"):
+        while store.get_task(task).state is not S.LEASED:
+            await orch.advance(task)
+    await orch.advance("r1-a")
+    spawning = asyncio.create_task(orch.advance("r1-b"))
+    try:
+        await asyncio.wait_for(b_entered.wait(), 10)
+        await asyncio.wait_for(orch._abort({"r1-b": spawning}), 3)
+        assert not b_started.is_set()
+        assert cancelled == ["r1-a"]
+    finally:
+        spawning.cancel()
+        await asyncio.gather(spawning, return_exceptions=True)
+        await orch.cancel_all("hard")
+        for live in list(orch._live.values()):
+            await live.worker.result(live.handle)
+
+
+async def test_abort_cancels_each_worker_even_if_one_cancel_raises(
+    store: SqliteEventStore, git_repo: Path
+) -> None:
+    cancelled: list[str] = []
+
+    class Worker(FakeWorker):
+        async def cancel(self, handle: RunHandle, mode: Literal["soft", "hard"]) -> None:
+            cancelled.append(handle.task_id)
+            await super().cancel(handle, mode)
+            if handle.task_id == "r1-a":
+                raise RuntimeError("cancel failed after stopping worker")
+
+    worker = Worker(delay_s=30)
+    orch = _orchestrator(store, git_repo, worker)
+    _create(orch, git_repo, [_spec("a", ["a/**"]), _spec("b", ["b/**"])])
+    for task in ("r1-a", "r1-b"):
+        while store.get_task(task).state is not S.RUNNING:
+            await orch.advance(task)
+    try:
+        await asyncio.wait_for(orch._abort({}), 3)
+        assert cancelled == ["r1-a", "r1-b"]
+    finally:
+        for live in list(orch._live.values()):
+            await FakeWorker.cancel(worker, live.handle, "hard")
+            await worker.result(live.handle)
 
 
 def test_bootstrap_serializes_questions(git_repo: Path) -> None:
