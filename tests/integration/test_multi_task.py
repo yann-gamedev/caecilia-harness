@@ -80,7 +80,9 @@ def _create(orch: Orchestrator, repo: Path, plan: Plan) -> str:
         specs,
         "main",
         {},
-        max_parallel=plan.max_parallel,
+        # These tests pin down dependency semantics, so they run serially unless the plan says
+        # otherwise; concurrency is covered by test_parallel_scheduler.py.
+        max_parallel=plan.max_parallel or 1,
         budget=run_budget(plan),
     )
 

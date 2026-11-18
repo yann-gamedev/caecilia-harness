@@ -15,7 +15,7 @@ import signal
 from collections.abc import Awaitable, Iterator
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import typer
 
@@ -92,8 +92,12 @@ def _fail(message: str) -> typer.Exit:
 
 
 @contextlib.contextmanager
-def _ctrl_c(prepared: PreparedRun) -> Iterator[None]:
-    """First Ctrl+C cancels workers softly, the second one hard (Windows: plain SIGINT)."""
+def _ctrl_c(prepared: PreparedRun, running: asyncio.Task[str]) -> Iterator[None]:
+    """First Ctrl+C cancels workers softly; the second stops the whole run.
+
+    Stopping the run also works while a question is waiting for an answer: the scheduler then
+    cancels every worker itself. Windows uses plain SIGINT.
+    """
     loop = asyncio.get_running_loop()
     presses = 0
     cancelling: set[asyncio.Task[None]] = set()  # keep references until the tasks finish
@@ -101,14 +105,14 @@ def _ctrl_c(prepared: PreparedRun) -> Iterator[None]:
     def on_sigint() -> None:
         nonlocal presses
         presses += 1
-        mode: Literal["soft", "hard"] = "soft" if presses == 1 else "hard"
-        if mode == "soft":
+        if presses == 1:
             typer.echo("\nMembatalkan dengan halus... tekan Ctrl+C sekali lagi untuk paksa.")
+            task = loop.create_task(prepared.orchestrator.cancel_all("soft"))
+            cancelling.add(task)
+            task.add_done_callback(cancelling.discard)
         else:
             typer.echo("\nMembatalkan paksa.")
-        task = loop.create_task(prepared.orchestrator.cancel_all(mode))
-        cancelling.add(task)
-        task.add_done_callback(cancelling.discard)
+            running.cancel()
 
     try:
         previous = signal.signal(
@@ -130,7 +134,7 @@ async def _drive(start: Awaitable[PreparedRun], plain: bool) -> str:
 
         def flush() -> None:
             for event in prepared.new_events():
-                typer.echo(format_event(event, plain))
+                typer.echo(format_event(event, plain, run_id=prepared.run_id))
 
         async def printer() -> None:
             while True:
@@ -138,9 +142,19 @@ async def _drive(start: Awaitable[PreparedRun], plain: bool) -> str:
                 await asyncio.sleep(_POLL_S)
 
         printing = asyncio.create_task(printer())
+        running = asyncio.create_task(prepared.execute())
         try:
-            with _ctrl_c(prepared):
-                status = await prepared.execute()
+            with _ctrl_c(prepared, running):
+                try:
+                    status = await running
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise  # caller cancellation must propagate, unlike second Ctrl+C
+                    typer.echo(
+                        f"Run {prepared.run_id} dihentikan. Lanjutkan dengan `caecilia resume`."
+                    )
+                    status = "cancelled"
         finally:
             printing.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -196,6 +210,14 @@ def run(
         Path | None,
         typer.Option("--plan", help="File plan.toml dengan banyak task (ganti GOAL)."),
     ] = None,
+    max_parallel: Annotated[
+        int | None,
+        typer.Option(
+            "--max-parallel",
+            min=1,
+            help="Task yang boleh bekerja bersamaan (default: nilai di plan, atau 2).",
+        ),
+    ] = None,
     plain: PlainOpt = False,
     goal: Annotated[
         str | None, typer.Argument(help="Apa yang harus dikerjakan (atau pakai --plan).")
@@ -222,6 +244,7 @@ def run(
             auto_merge=auto_merge,
             unsafe_no_sandbox=unsafe_no_sandbox,
             model=model,
+            max_parallel=max_parallel,
         )
     else:
         assert goal is not None  # noqa: S101 - checked above
@@ -235,6 +258,7 @@ def run(
             auto_merge=auto_merge,
             unsafe_no_sandbox=unsafe_no_sandbox,
             model=model,
+            max_parallel=max_parallel,
         )
     try:
         status = asyncio.run(_drive(start, plain))

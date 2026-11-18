@@ -14,6 +14,7 @@ from caecilia_harness.bootstrap import (
     get_run_status,
     list_runs,
     prepare_run,
+    prepare_run_from_plan,
     resume_run,
 )
 from caecilia_harness.core.models import Action, GateReport
@@ -42,11 +43,12 @@ def _run(repo: Path, *extra: str, check: str = PASS) -> object:
 
 
 def test_run_fake_auto_merge_then_status_and_runs(git_repo: Path) -> None:
-    result = _run(git_repo, "--worker", "fake", "--auto-merge", "--plain")
+    result = _run(git_repo, "--worker", "fake", "--auto-merge", "--plain", "--max-parallel", "3")
     assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
     output = result.output  # type: ignore[attr-defined]
     assert "\x1b" not in output
     assert "task.state_changed" in output and "gate.passed" in output
+    assert "[main]" in output
     assert git(git_repo, "show", "main:CAECILIA_FAKE.md") == "tambahkan catatan"
 
     status = runner.invoke(app, ["status", "--plain"])
@@ -185,6 +187,70 @@ async def test_resume_run_directly(git_repo: Path) -> None:
         assert await resumed.execute() == "done"
     finally:
         resumed.close()
+
+
+@pytest.mark.parametrize("override", [None, 1, 3])
+async def test_parallel_limit_is_saved_and_reused_on_resume(
+    git_repo: Path, tmp_path: Path, override: int | None
+) -> None:
+    plan_path = tmp_path / "plan.toml"
+    plan_path.write_text(
+        'version = 1\ngoal = "g"\nmax_parallel = 4\n'
+        '[[task]]\nid = "api"\ntitle = "API"\ninstructions = "do it"\n',
+        encoding="utf-8",
+    )
+    prepared = await prepare_run_from_plan(
+        plan_path,
+        git_repo,
+        [sys.executable, "-c", "print(1)"],
+        _NoTty(),
+        worker_kind="fake",
+        max_parallel=override,
+    )
+    run_id = prepared.run_id
+    try:
+        created = next(e for e in prepared.new_events() if e.type == "run.created")
+        assert created.payload["max_parallel"] == (override or 4)
+        assert created.payload["options"]["max_parallel"] == (override or 4)
+    finally:
+        prepared.close()
+    resumed = await resume_run(_NoTty(), run_id)
+    try:
+        assert resumed.orchestrator._max_parallel(run_id) == (override or 4)
+    finally:
+        resumed.close()
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+async def test_app_rejects_invalid_parallel_limit(git_repo: Path, limit: int) -> None:
+    with pytest.raises(AppError, match="max_parallel"):
+        await prepare_run(
+            "g",
+            git_repo,
+            [sys.executable, "-c", "print(1)"],
+            _NoTty(),
+            worker_kind="fake",
+            max_parallel=limit,
+        )
+    assert list_runs() == []
+
+
+@pytest.mark.parametrize("limit", [None, 3])
+async def test_single_task_parallel_limit_default_and_override(
+    git_repo: Path, limit: int | None
+) -> None:
+    prepared = await prepare_run(
+        "g",
+        git_repo,
+        [sys.executable, "-c", "print(1)"],
+        _NoTty(),
+        worker_kind="fake",
+        max_parallel=limit,
+    )
+    try:
+        assert prepared.orchestrator._max_parallel(prepared.run_id) == (limit or 2)
+    finally:
+        prepared.close()
 
 
 async def test_prepare_run_with_explicit_target(git_repo: Path) -> None:

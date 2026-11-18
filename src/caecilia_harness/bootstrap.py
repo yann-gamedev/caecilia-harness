@@ -18,6 +18,7 @@ from caecilia_harness import artifacts
 from caecilia_harness.core.models import Action, Event, Workspace
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
+from caecilia_harness.core.prompting import SerializedPrompter
 from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, harness_home
 from caecilia_harness.planning.plan import (
@@ -140,15 +141,17 @@ def _assemble(
         raise
     try:
         store = SqliteEventStore(conn, projectors=[project_runs_and_tasks])
+        # Parallel tasks may ask at the same time: questions go to the person one by one.
+        questions = SerializedPrompter(prompter)
         gate = SimpleGate(
-            repo_path, check_command, confirm=prompter.confirm_merge, auto_merge=auto_merge
+            repo_path, check_command, confirm=questions.confirm_merge, auto_merge=auto_merge
         )
         orchestrator = Orchestrator(
             store,
             GitWorktreeBackend(repo_path),
             gate,
             workers,
-            prompter,
+            questions,
             artifact_info=artifact_info,
             closers=[conn.close, lock.release],
         )
@@ -274,7 +277,12 @@ async def _prepare(
     auto_merge: bool,
     unsafe_no_sandbox: bool,
     model: str | None,
+    max_parallel: int | None,
 ) -> PreparedRun:
+    if max_parallel is not None:
+        if max_parallel < 1:
+            raise AppError("max_parallel wajib minimal 1")
+        plan = Plan.model_validate(plan.model_dump() | {"max_parallel": max_parallel})
     if not check_command:
         raise AppError("check command tidak boleh kosong")
     repo = await _repo_root(repo_path)
@@ -295,6 +303,7 @@ async def _prepare(
             "auto_merge": auto_merge,
             "unsafe_no_sandbox": unsafe_no_sandbox,
             "model": model,
+            "max_parallel": plan.max_parallel,
         }
         orchestrator.create_run(
             plan.goal,
@@ -323,6 +332,7 @@ async def prepare_run(
     unsafe_no_sandbox: bool = False,
     idempotent: bool = True,
     model: str | None = None,
+    max_parallel: int | None = None,
 ) -> PreparedRun:
     """Create a run with one task for `goal` (a one-task plan, see `single_task_plan`).
 
@@ -342,6 +352,7 @@ async def prepare_run(
         auto_merge,
         unsafe_no_sandbox,
         model,
+        max_parallel,
     )
 
 
@@ -355,6 +366,7 @@ async def prepare_run_from_plan(
     auto_merge: bool = False,
     unsafe_no_sandbox: bool = False,
     model: str | None = None,
+    max_parallel: int | None = None,
 ) -> PreparedRun:
     """Create a run from a `plan.toml` (`PlanError` lists every problem in it).
 
@@ -372,6 +384,7 @@ async def prepare_run_from_plan(
         auto_merge,
         unsafe_no_sandbox,
         model,
+        max_parallel,
     )
 
 
