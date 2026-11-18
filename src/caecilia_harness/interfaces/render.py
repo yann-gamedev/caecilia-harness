@@ -12,6 +12,7 @@ import typer
 
 from caecilia_harness.bootstrap import RunStatus, RunSummary
 from caecilia_harness.core.models import Event
+from caecilia_harness.planning.plan import plan_id
 
 _COLORS = {
     "run.": typer.colors.MAGENTA,
@@ -90,11 +91,15 @@ def _style(text: str, event_type: str, plain: bool) -> str:
     return text
 
 
-def format_event(event: Event, plain: bool) -> str:
-    """`HH:MM:SS  #seq  type  stream  summary` (local time)."""
+def format_event(event: Event, plain: bool, run_id: str = "") -> str:
+    """`HH:MM:SS  #seq  [plan task id]  type  stream  summary` (local time)."""
     clock = event.ts.astimezone().strftime("%H:%M:%S")
     kind = _style(f"{event.type:<20}", event.type, plain)
-    return f"{clock}  #{event.seq:<4} {kind} {event.stream:<22} {event_summary(event)}".rstrip()
+    scope, _, identity = event.stream.partition(":")
+    task = plan_id(identity, run_id) if scope in {"task", "approval"} else "-"
+    return (
+        f"{clock}  #{event.seq:<4} [{task}] {kind} {event.stream:<22} {event_summary(event)}"
+    ).rstrip()
 
 
 def _table(header: Sequence[str], rows: Sequence[Sequence[str]], plain: bool) -> list[str]:
