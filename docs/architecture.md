@@ -206,6 +206,10 @@ run dibuat. Perintah `caecilia run GOAL` tanpa `--plan` tetap membuat run satu t
 | merge | 1 | satu `Gate.check()` |
 
 Pertanyaan ke pengguna (approval, konfirmasi merge) diserialkan dan tidak memblokir event loop.
+CLI membaca jawaban lewat daemon thread, bukan `asyncio.to_thread`, supaya shutdown tidak menunggu
+`input()` selesai setelah pembatalan. Pengecualian prompt 17 ini disetujui pemilik pada 2026-11-18.
+Ctrl+C pertama meminta pembatalan halus; Ctrl+C kedua menghentikan run termasuk saat prompt menunggu.
+Scheduler menjadwalkan ulang saat slot worker dilepas, meskipun driver masih menunggu gate.
 Budget run terlampaui → tidak ada lease baru; run berhenti `needs_human` setelah task berjalan selesai.
 
 ## Aturan konkurensi
@@ -249,3 +253,7 @@ resolusi konflik. Paralel memakan lebih banyak token (setiap worker mendapat con
 Paralelkan hanya jika: ≥ 2 task READY, write set yang dideklarasikan tidak beririsan, setiap task
 diperkirakan jauh lebih lama daripada satu siklus gate, dan budget token cukup untuk konteks ganda.
 Selain itu jalankan serial.
+
+Tes scheduler M2-03 membuktikan paralelisme lewat interval event yang bertumpuk dan konkurensi puncak 2,
+bukan batas wall-clock 1,8 detik. Penyesuaian disetujui pemilik pada 2026-11-18 karena biaya Git dan gate
+sungguhan bergantung pada mesin; angka performa tetap menjadi cakupan benchmark M2-B.

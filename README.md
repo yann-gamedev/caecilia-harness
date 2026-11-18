@@ -39,7 +39,8 @@ uv run caecilia resume            # lanjutkan run yang belum selesai setelah cra
 - `--target BRANCH` memilih branch target (default: branch aktif di repo).
 - Exit code: `0` DONE, `2` NEEDS_HUMAN (gate gagal terus, konflik, atau merge tidak dikonfirmasi),
   `1` gagal/dibatalkan/error.
-- Ctrl+C sekali membatalkan worker dengan halus, dua kali secara paksa.
+- Ctrl+C sekali membatalkan worker dengan halus. Ctrl+C kedua menghentikan run secara paksa,
+  termasuk saat menunggu jawaban approval atau konfirmasi merge; lanjutkan dengan `caecilia resume`.
 - `--plain` mematikan warna untuk log dan CI.
 - Hanya satu `caecilia run`/`resume` yang boleh berjalan sekaligus; yang kedua ditolak.
 
@@ -72,8 +73,12 @@ uv run caecilia run --plan plan.toml --repo PATH --check "uv run pytest" --worke
 ```
 
 - `caecilia run` menerima **tepat satu** dari `GOAL` atau `--plan FILE`.
-- Task dijalankan satu per satu dalam urutan dependensi (paralel menyusul di M2). Task baru dimulai
-  dari head branch target saat itu, jadi ia sudah melihat hasil merge blocker-nya.
+- Task independen berjalan paralel jika write set-nya terbukti terpisah. Write set yang mungkin
+  beririsan tetap serial; gate dan pertanyaan pengguna selalu satu per satu.
+- `--max-parallel N` (minimal 1) mengalahkan `max_parallel` di plan; default 2. Nilai disimpan untuk
+  `resume`. Batas ini menghitung task LEASED/RUNNING, bukan task yang menunggu gate.
+- Setiap baris event menampilkan id task versi plan dalam `[api]` atau `[web]`; event run memakai `[-]`.
+- Task baru dimulai dari head branch target saat itu, jadi ia sudah melihat hasil merge blocker-nya.
 - Blocker gagal atau dibatalkan → task yang bergantung padanya dibatalkan. Blocker NEEDS_HUMAN → task
   yang bergantung tetap menunggu dan run berhenti dengan exit `2`.
 - `--worker` menjadi default untuk task yang tidak menyebut `worker`; `--target` mengalahkan `target`

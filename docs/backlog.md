@@ -67,7 +67,7 @@ Checklist:
 
 - [x] M2-01
 - [x] M2-02
-- [ ] M2-03
+- [x] M2-03
 - [ ] M2-04
 - [ ] M2-05
 - [ ] M2-06
@@ -134,3 +134,4 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
 - 2026-11-16 — M2 dipecah menjadi 8 task (prompt 15–22); ADR-0013 dan keputusan D11 ditambahkan.
 - 2026-11-16 — M2-01 selesai: `core/globs.py` (pencocokan glob, normalisasi, `may_overlap` konservatif) dan `core/graph.py` (validasi graf, urutan topologis, `ready`, `blocked_by_failure`, `conflicts`).
 - 2026-11-16 — M2-02 selesai: `planning/plan.py` (model plan, baca/tulis TOML, `plan_to_specs`), run multi-task serial sadar dependensi, `graph.revised` revisi 1, base commit saat spawn, `caecilia run --plan` dan `caecilia plan validate`.
+- 2026-11-18 — M2-03 selesai: scheduler paralel dengan batas worker dan konflik write set, gate serial, outbox per task tanpa spawn ganda, `SerializedPrompter`, input terminal nonblocking, `--max-parallel` tersimpan untuk resume, serta label task di log. Pemilik menyetujui daemon thread untuk pembatalan prompt dan bukti overlap/konkurensi sebagai pengganti batas waktu 1,8 detik.
