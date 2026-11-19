@@ -68,7 +68,7 @@ Checklist:
 - [x] M2-01
 - [x] M2-02
 - [x] M2-03
-- [ ] M2-04
+- [x] M2-04
 - [ ] M2-05
 - [ ] M2-06
 - [ ] M2-07
@@ -135,3 +135,4 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
 - 2026-11-16 — M2-01 selesai: `core/globs.py` (pencocokan glob, normalisasi, `may_overlap` konservatif) dan `core/graph.py` (validasi graf, urutan topologis, `ready`, `blocked_by_failure`, `conflicts`).
 - 2026-11-16 — M2-02 selesai: `planning/plan.py` (model plan, baca/tulis TOML, `plan_to_specs`), run multi-task serial sadar dependensi, `graph.revised` revisi 1, base commit saat spawn, `caecilia run --plan` dan `caecilia plan validate`.
 - 2026-11-18 — M2-03 selesai: scheduler paralel dengan batas worker dan konflik write set, gate serial, outbox per task tanpa spawn ganda, `SerializedPrompter`, input terminal nonblocking, `--max-parallel` tersimpan untuk resume, serta label task di log. Pemilik menyetujui daemon thread untuk pembatalan prompt dan bukti overlap/konkurensi sebagai pengganti batas waktu 1,8 detik.
+- 2026-11-19 — M2-04 selesai: `LimitedProvider` dan slot exec bersama (diambil setelah approval), opsi `--provider-slots`/`--exec-slots` tersimpan untuk resume, budget token run dari event durable dengan penghentian lease baru, serta penolakan diff di luar write set sebelum gate dengan laporan rework. Pembatalan exec menunggu proses dan pembaca output selesai sebelum melepas slot.

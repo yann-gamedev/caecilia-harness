@@ -211,6 +211,19 @@ CLI membaca jawaban lewat daemon thread, bukan `asyncio.to_thread`, supaya shutd
 Ctrl+C pertama meminta pembatalan halus; Ctrl+C kedua menghentikan run termasuk saat prompt menunggu.
 Scheduler menjadwalkan ulang saat slot worker dilepas, meskipun driver masih menunggu gate.
 Budget run terlampaui → tidak ada lease baru; run berhenti `needs_human` setelah task berjalan selesai.
+Penghitung menjumlahkan seluruh `usage.recorded` task run dan dibangun ulang dari event saat resume.
+M2 hanya menegakkan `max_input_tokens` dan `max_output_tokens` (batas sama persis masih diizinkan).
+`run.budget_exceeded {used, limit}` dicatat sekali per run dengan idempotency key berbasis run;
+`run.finished.reason` menyebut budget. Menaikkan budget setelah habis belum tersedia.
+
+`--provider-slots` dan `--exec-slots` (minimal 1, default 2) disimpan dalam opsi run untuk resume.
+`LimitedProvider` memegang semaphore bersama hanya selama konsumsi satu stream request, termasuk cleanup.
+Konsumen yang berhenti membaca lebih awal wajib menutup stream dengan `aclose()` untuk pelepasan segera.
+Exec mengambil slot setelah approval, tepat sebelum spawn; slot dilepas setelah proses selesai atau dibatalkan.
+Pelanggaran write set menghasilkan `gate.failed` tanpa memanggil gate, setelah masuk INTEGRATING di slot merge.
+Laporan memuat `checks.write_set=false`, pola yang berlaku, dan semua file pelanggar untuk handoff rework.
+Daftar file diff memakai `--no-renames` agar pemindahan memeriksa sumber yang dihapus dan tujuan yang ditulis.
+Perluasan cakupan prompt 18 ke `workspace/git_worktree.py` disetujui pemilik pada 2026-11-19.
 
 ## Aturan konkurensi
 
