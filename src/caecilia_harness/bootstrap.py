@@ -6,6 +6,7 @@ later) call functions here instead of assembling components themselves (ADR-0012
 
 from __future__ import annotations
 
+import asyncio
 import os
 import uuid
 from collections.abc import Collection
@@ -30,6 +31,7 @@ from caecilia_harness.planning.plan import (
     single_task_plan,
 )
 from caecilia_harness.providers.deepseek import DeepSeekProvider
+from caecilia_harness.providers.limited import LimitedProvider
 from caecilia_harness.security.approval import ApprovalPolicy, Approver, ExecRequest
 from caecilia_harness.security.keys import get_api_key
 from caecilia_harness.store.db import open_db, open_readonly
@@ -88,11 +90,15 @@ def make_provider(api_key: str) -> ModelProvider:
 
 
 def _native_worker(
-    model: str | None, unsafe_no_sandbox: bool, orchestrator_ref: list[Orchestrator]
+    model: str | None,
+    unsafe_no_sandbox: bool,
+    orchestrator_ref: list[Orchestrator],
+    provider_slots: asyncio.Semaphore,
+    exec_slots: asyncio.Semaphore,
 ) -> NativeWorker:
     if not model:
         raise AppError("--model wajib diisi untuk --worker native (nama model di provider)")
-    provider = make_provider(get_api_key(NATIVE_PROVIDER))
+    provider = LimitedProvider(make_provider(get_api_key(NATIVE_PROVIDER)), provider_slots)
     sandbox = detect_sandbox()
 
     async def approve(req: ExecRequest) -> bool:
@@ -107,6 +113,7 @@ def _native_worker(
             sandbox,
             unsafe_no_sandbox=unsafe_no_sandbox,
             task_id=ws.task_id,
+            slots=exec_slots,
         )
 
     return NativeWorker(provider, model, runner_for)
@@ -120,8 +127,13 @@ def _assemble(
     auto_merge: bool,
     model: str | None = None,
     unsafe_no_sandbox: bool = False,
+    provider_slots: int = 2,
+    exec_slots: int = 2,
 ) -> tuple[Orchestrator, SqliteEventStore]:
     """Build every worker the run's tasks refer to, then lock, open the DB and wire it up."""
+    for name, limit in (("provider_slots", provider_slots), ("exec_slots", exec_slots)):
+        if type(limit) is not int or limit < 1:
+            raise AppError(f"{name} wajib bilangan bulat minimal 1")
     unknown = sorted(set(worker_kinds) - set(WORKER_KINDS))
     if unknown:
         raise AppError(
@@ -131,7 +143,13 @@ def _assemble(
     workers: dict[str, WorkerAdapter] = {"fake": FakeWorker(spawn_log=_fake_spawn_log())}
     if "native" in worker_kinds:
         # Fails here, before any lock or DB is touched, if the key or model is missing.
-        workers["native"] = _native_worker(model, unsafe_no_sandbox, orchestrator_ref)
+        workers["native"] = _native_worker(
+            model,
+            unsafe_no_sandbox,
+            orchestrator_ref,
+            asyncio.Semaphore(provider_slots),
+            asyncio.Semaphore(exec_slots),
+        )
     lock = WriterLock(harness_home() / "harness.lock")
     lock.acquire()
     try:
@@ -171,6 +189,8 @@ def build_orchestrator(
     auto_merge: bool = False,
     unsafe_no_sandbox: bool = False,
     model: str | None = None,
+    provider_slots: int = 2,
+    exec_slots: int = 2,
 ) -> Orchestrator:
     """Assemble store, workspace backend, gate and worker. Call `close()` on the result.
 
@@ -179,7 +199,15 @@ def build_orchestrator(
     `unsafe_no_sandbox` only affects the native worker's exec runner.
     """
     return _assemble(
-        repo_path, {worker_kind}, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+        repo_path,
+        {worker_kind},
+        check_command,
+        prompter,
+        auto_merge,
+        model,
+        unsafe_no_sandbox,
+        provider_slots=provider_slots,
+        exec_slots=exec_slots,
     )[0]
 
 
@@ -278,6 +306,8 @@ async def _prepare(
     unsafe_no_sandbox: bool,
     model: str | None,
     max_parallel: int | None,
+    provider_slots: int,
+    exec_slots: int,
 ) -> PreparedRun:
     if max_parallel is not None:
         if max_parallel < 1:
@@ -292,7 +322,15 @@ async def _prepare(
     specs = plan_to_specs(plan, run_id, default_worker=worker_kind)
     worker_kinds = sorted({spec.worker for spec in specs})
     orchestrator, store = _assemble(
-        repo, worker_kinds, check_command, prompter, auto_merge, model, unsafe_no_sandbox
+        repo,
+        worker_kinds,
+        check_command,
+        prompter,
+        auto_merge,
+        model,
+        unsafe_no_sandbox,
+        provider_slots=provider_slots,
+        exec_slots=exec_slots,
     )
     try:
         await orchestrator.recover()
@@ -304,6 +342,8 @@ async def _prepare(
             "unsafe_no_sandbox": unsafe_no_sandbox,
             "model": model,
             "max_parallel": plan.max_parallel,
+            "provider_slots": provider_slots,
+            "exec_slots": exec_slots,
         }
         orchestrator.create_run(
             plan.goal,
@@ -333,6 +373,8 @@ async def prepare_run(
     idempotent: bool = True,
     model: str | None = None,
     max_parallel: int | None = None,
+    provider_slots: int = 2,
+    exec_slots: int = 2,
 ) -> PreparedRun:
     """Create a run with one task for `goal` (a one-task plan, see `single_task_plan`).
 
@@ -353,6 +395,8 @@ async def prepare_run(
         unsafe_no_sandbox,
         model,
         max_parallel,
+        provider_slots,
+        exec_slots,
     )
 
 
@@ -367,6 +411,8 @@ async def prepare_run_from_plan(
     unsafe_no_sandbox: bool = False,
     model: str | None = None,
     max_parallel: int | None = None,
+    provider_slots: int = 2,
+    exec_slots: int = 2,
 ) -> PreparedRun:
     """Create a run from a `plan.toml` (`PlanError` lists every problem in it).
 
@@ -385,6 +431,8 @@ async def prepare_run_from_plan(
         unsafe_no_sandbox,
         model,
         max_parallel,
+        provider_slots,
+        exec_slots,
     )
 
 
@@ -407,6 +455,8 @@ async def resume_run(
         bool(options.get("auto_merge", False)),
         options.get("model"),
         unsafe_no_sandbox or bool(options.get("unsafe_no_sandbox", False)),
+        provider_slots=options.get("provider_slots", 2),
+        exec_slots=options.get("exec_slots", 2),
     )
     try:
         await orchestrator.recover()

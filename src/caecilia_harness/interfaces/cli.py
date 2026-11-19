@@ -222,6 +222,14 @@ def run(
     goal: Annotated[
         str | None, typer.Argument(help="Apa yang harus dikerjakan (atau pakai --plan).")
     ] = None,
+    provider_slots: Annotated[
+        int,
+        typer.Option("--provider-slots", min=1, help="Request model bersamaan per provider."),
+    ] = 2,
+    exec_slots: Annotated[
+        int,
+        typer.Option("--exec-slots", min=1, help="Perintah exec bersamaan di seluruh task."),
+    ] = 2,
 ) -> None:
     """Start a run from GOAL (one task) or --plan FILE (several tasks with dependencies).
 
@@ -245,6 +253,8 @@ def run(
             unsafe_no_sandbox=unsafe_no_sandbox,
             model=model,
             max_parallel=max_parallel,
+            provider_slots=provider_slots,
+            exec_slots=exec_slots,
         )
     else:
         assert goal is not None  # noqa: S101 - checked above
@@ -259,6 +269,8 @@ def run(
             unsafe_no_sandbox=unsafe_no_sandbox,
             model=model,
             max_parallel=max_parallel,
+            provider_slots=provider_slots,
+            exec_slots=exec_slots,
         )
     try:
         status = asyncio.run(_drive(start, plain))
