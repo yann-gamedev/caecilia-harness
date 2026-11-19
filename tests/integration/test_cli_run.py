@@ -3,24 +3,31 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
 
+from caecilia_harness import bootstrap
 from caecilia_harness.bootstrap import (
     AppError,
+    build_orchestrator,
     get_run_status,
     list_runs,
     prepare_run,
     prepare_run_from_plan,
     resume_run,
 )
-from caecilia_harness.core.models import Action, GateReport
+from caecilia_harness.core.models import Action, GateReport, Workspace
 from caecilia_harness.interfaces.cli import app
 from caecilia_harness.paths import harness_home
+from caecilia_harness.providers.fake import FakeProvider
 from caecilia_harness.store.lock import WriterLock
+from caecilia_harness.workers.native.worker import NativeWorker
 from tests.integration.conftest import git
 
 runner = CliRunner()
@@ -43,7 +50,19 @@ def _run(repo: Path, *extra: str, check: str = PASS) -> object:
 
 
 def test_run_fake_auto_merge_then_status_and_runs(git_repo: Path) -> None:
-    result = _run(git_repo, "--worker", "fake", "--auto-merge", "--plain", "--max-parallel", "3")
+    result = _run(
+        git_repo,
+        "--worker",
+        "fake",
+        "--auto-merge",
+        "--plain",
+        "--max-parallel",
+        "3",
+        "--provider-slots",
+        "3",
+        "--exec-slots",
+        "4",
+    )
     assert result.exit_code == 0, result.output  # type: ignore[attr-defined]
     output = result.output  # type: ignore[attr-defined]
     assert "\x1b" not in output
@@ -56,6 +75,9 @@ def test_run_fake_auto_merge_then_status_and_runs(git_repo: Path) -> None:
     assert "DONE" in status.output
 
     [run] = list_runs()
+    options = bootstrap._run_created(run.id)["options"]
+    assert options["provider_slots"] == 3
+    assert options["exec_slots"] == 4
     runs = runner.invoke(app, ["runs", "--plain"])
     assert runs.exit_code == 0
     assert run.id in runs.output and "done" in runs.output
@@ -251,6 +273,142 @@ async def test_single_task_parallel_limit_default_and_override(
         assert prepared.orchestrator._max_parallel(prepared.run_id) == (limit or 2)
     finally:
         prepared.close()
+
+
+@pytest.mark.parametrize("from_plan", [False, True])
+@pytest.mark.parametrize("limits", [None, (3, 4)])
+async def test_slot_limits_are_saved_and_reused_on_resume(
+    git_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    from_plan: bool,
+    limits: tuple[int, int] | None,
+) -> None:
+    assemble = Mock(wraps=bootstrap._assemble)
+    monkeypatch.setattr(bootstrap, "_assemble", assemble)
+    options = (
+        {} if limits is None else dict(zip(("provider_slots", "exec_slots"), limits, strict=True))
+    )
+    check = [sys.executable, "-c", "print(1)"]
+    if from_plan:
+        plan_path = tmp_path / "plan.toml"
+        plan_path.write_text(
+            'version = 1\ngoal = "g"\n[[task]]\nid = "api"\n'
+            'title = "API"\ninstructions = "do it"\n',
+            encoding="utf-8",
+        )
+        prepared = await prepare_run_from_plan(
+            plan_path, git_repo, check, _NoTty(), worker_kind="fake", **options
+        )
+    else:
+        prepared = await prepare_run("g", git_repo, check, _NoTty(), worker_kind="fake", **options)
+    expected = dict(zip(("provider_slots", "exec_slots"), limits or (2, 2), strict=True))
+    try:
+        created = next(event for event in prepared.new_events() if event.type == "run.created")
+        for name, value in expected.items():
+            assert created.payload["options"][name] == value
+    finally:
+        prepared.close()
+    resumed = await resume_run(_NoTty(), prepared.run_id)
+    try:
+        assert assemble.call_args is not None
+        for name, value in expected.items():
+            assert assemble.call_args.kwargs[name] == value
+    finally:
+        resumed.close()
+
+
+async def test_resume_older_run_defaults_slot_limits(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = await prepare_run("g", git_repo, [sys.executable], _NoTty(), worker_kind="fake")
+    try:
+        created = next(event for event in prepared.new_events() if event.type == "run.created")
+    finally:
+        prepared.close()
+    payload = created.payload
+    payload["options"].pop("provider_slots", None)
+    payload["options"].pop("exec_slots", None)
+    monkeypatch.setattr(bootstrap, "_run_created", lambda _: payload)
+    assemble = Mock(wraps=bootstrap._assemble)
+    monkeypatch.setattr(bootstrap, "_assemble", assemble)
+    resumed = await resume_run(_NoTty(), prepared.run_id)
+    try:
+        assert assemble.call_args.kwargs["provider_slots"] == 2
+        assert assemble.call_args.kwargs["exec_slots"] == 2
+    finally:
+        resumed.close()
+
+
+@pytest.mark.parametrize("name", ["provider_slots", "exec_slots"])
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, "2"])
+@pytest.mark.parametrize("entry", ["build", "goal", "plan"])
+async def test_app_rejects_invalid_slots_before_opening_database(
+    git_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    limit: Any,
+    entry: str,
+) -> None:
+    open_db = Mock(side_effect=AssertionError("database must not be opened"))
+    monkeypatch.setattr(bootstrap, "open_db", open_db)
+    options = {name: limit}
+    with pytest.raises(AppError, match=name):
+        if entry == "build":
+            build_orchestrator(git_repo, "fake", [sys.executable], _NoTty(), **options)
+        elif entry == "goal":
+            await prepare_run("g", git_repo, [sys.executable], _NoTty(), "fake", **options)
+        else:
+            plan = tmp_path / "plan.toml"
+            plan.write_text(
+                'version = 1\ngoal = "g"\n[[task]]\nid = "api"\n'
+                'title = "API"\ninstructions = "do it"\n',
+                encoding="utf-8",
+            )
+            await prepare_run_from_plan(
+                plan, git_repo, [sys.executable], _NoTty(), "fake", **options
+            )
+    open_db.assert_not_called()
+    assert not (harness_home() / "harness.lock").exists()
+
+
+async def test_bootstrap_shares_provider_and_exec_semaphores(
+    git_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = FakeProvider([])
+    monkeypatch.setattr(bootstrap, "make_provider", lambda _: provider)
+    monkeypatch.setattr(bootstrap, "get_api_key", lambda _: "test-key")
+    limited = Mock(wraps=bootstrap.LimitedProvider)
+    runners = Mock(wraps=bootstrap.ExecRunner)
+    monkeypatch.setattr(bootstrap, "LimitedProvider", limited)
+    monkeypatch.setattr(bootstrap, "ExecRunner", runners)
+    orchestrator = build_orchestrator(
+        git_repo,
+        "native",
+        [sys.executable],
+        _NoTty(),
+        model="test-model",
+        provider_slots=3,
+        exec_slots=4,
+    )
+    try:
+        native = cast(NativeWorker, orchestrator.workers["native"])
+        limited.assert_called_once()
+        inner, provider_semaphore = limited.call_args.args
+        assert inner is provider
+        assert isinstance(provider_semaphore, asyncio.Semaphore)
+        assert provider_semaphore._value == 3
+        for task_id in ("api", "web"):
+            native.exec_runner_factory(
+                Workspace(task_id=task_id, path=str(git_repo), branch=task_id, base_commit="base")
+            )
+        first, second = [call.kwargs["slots"] for call in runners.call_args_list]
+        assert first is second
+        assert first is not provider_semaphore
+        assert first._value == 4
+    finally:
+        orchestrator.close()
 
 
 async def test_prepare_run_with_explicit_target(git_repo: Path) -> None:

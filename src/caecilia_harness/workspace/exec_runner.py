@@ -93,6 +93,7 @@ class ExecRunner:
         timeout_s: float = 600,
         output_limit: int = 64_000,
         task_id: str = "",
+        slots: asyncio.Semaphore | None = None,
     ) -> None:
         self.worktree = worktree.resolve()
         self.policy = policy
@@ -102,6 +103,7 @@ class ExecRunner:
         self.timeout_s = timeout_s
         self.output_limit = output_limit
         self.task_id = task_id
+        self.slots = slots
 
     def _resolve_cwd(self, cwd: Path | None) -> Path:
         if cwd is None:
@@ -147,42 +149,57 @@ class ExecRunner:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             kwargs["start_new_session"] = True
-        proc = await asyncio.create_subprocess_exec(
-            *final_argv,
-            cwd=workdir,
-            env=scrub_env(os.environ),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            **kwargs,
-        )
-        readers = asyncio.gather(
-            _read_tail(proc.stdout, self.output_limit),
-            _read_tail(proc.stderr, self.output_limit),
-        )
-        timed_out = False
-        try:
+        async with self.slots if self.slots is not None else contextlib.nullcontext():
+            proc = await asyncio.create_subprocess_exec(
+                *final_argv,
+                cwd=workdir,
+                env=scrub_env(os.environ),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **kwargs,
+            )
+            readers = asyncio.gather(
+                _read_tail(proc.stdout, self.output_limit),
+                _read_tail(proc.stderr, self.output_limit),
+            )
+            timed_out = False
             try:
-                await asyncio.wait_for(asyncio.shield(proc.wait()), self.timeout_s)
-            except TimeoutError:
-                timed_out = True
-                await _kill_tree(proc)
-            try:
-                stdout, stderr = await asyncio.wait_for(readers, _KILL_GRACE_S)
-            except TimeoutError:
-                # A grandchild escaped the kill and still holds a pipe; give up on its output.
+                try:
+                    await asyncio.wait_for(asyncio.shield(proc.wait()), self.timeout_s)
+                except TimeoutError:
+                    timed_out = True
+                    await _kill_tree(proc)
+                try:
+                    stdout, stderr = await asyncio.wait_for(readers, _KILL_GRACE_S)
+                except TimeoutError:
+                    # A grandchild escaped the kill and still holds a pipe; give up on its output.
+                    readers.cancel()
+                    stdout, stderr = b"", b""
+                exit_code = await proc.wait()
+            except asyncio.CancelledError:
+                # Caller cancelled (e.g. a hard worker cancel): never leave the tree running.
                 readers.cancel()
-                stdout, stderr = b"", b""
-            exit_code = await proc.wait()
-        except asyncio.CancelledError:
-            # The caller was cancelled (e.g. a hard worker cancel): never leave the tree running.
-            readers.cancel()
-            await asyncio.shield(_kill_tree(proc))
-            raise
-        return ExecResult(
-            exit_code=exit_code,
-            stdout_tail=_decode_tail(stdout, self.output_limit),
-            stderr_tail=_decode_tail(stderr, self.output_limit),
-            timed_out=timed_out,
-            sandboxed=self.sandbox is not None,
-        )
+
+                async def cleanup() -> None:
+                    await _kill_tree(proc)
+                    await proc.wait()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await readers
+
+                cleanup_task = asyncio.create_task(cleanup())
+                while not cleanup_task.done():
+                    try:
+                        await asyncio.shield(cleanup_task)
+                    except asyncio.CancelledError:
+                        # Repeated cancellation must not release the slot before cleanup finishes.
+                        continue
+                cleanup_task.result()
+                raise
+            return ExecResult(
+                exit_code=exit_code,
+                stdout_tail=_decode_tail(stdout, self.output_limit),
+                stderr_tail=_decode_tail(stderr, self.output_limit),
+                timed_out=timed_out,
+                sandboxed=self.sandbox is not None,
+            )

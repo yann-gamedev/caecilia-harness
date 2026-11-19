@@ -77,6 +77,13 @@ uv run caecilia run --plan plan.toml --repo PATH --check "uv run pytest" --worke
   beririsan tetap serial; gate dan pertanyaan pengguna selalu satu per satu.
 - `--max-parallel N` (minimal 1) mengalahkan `max_parallel` di plan; default 2. Nilai disimpan untuk
   `resume`. Batas ini menghitung task LEASED/RUNNING, bukan task yang menunggu gate.
+- `--provider-slots N` dan `--exec-slots N` (minimal 1, default 2) membatasi request model per provider
+  dan perintah exec bersamaan. Keduanya disimpan untuk `resume`; menunggu approval tidak memakai slot exec.
+- `[budget]` di plan membatasi total `max_input_tokens` dan `max_output_tokens` seluruh run. Ketika total
+  melebihi batas, tidak ada lease baru; task berjalan diselesaikan, lalu run berhenti `needs_human`.
+  `resume` tetap memakai total yang sudah tercatat; menaikkan budget belum tersedia.
+- Diff di luar `write_set` ditolak sebelum gate dijalankan. Task masuk REWORK dengan daftar file pelanggar
+  dan pola yang berlaku; setelah attempt habis, task membutuhkan bantuan pengguna.
 - Setiap baris event menampilkan id task versi plan dalam `[api]` atau `[web]`; event run memakai `[-]`.
 - Task baru dimulai dari head branch target saat itu, jadi ia sudah melihat hasil merge blocker-nya.
 - Blocker gagal atau dibatalkan → task yang bergantung padanya dibatalkan. Blocker NEEDS_HUMAN → task

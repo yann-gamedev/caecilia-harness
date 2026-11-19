@@ -14,7 +14,7 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from caecilia_harness.bootstrap import PreparedRun
+from caecilia_harness.bootstrap import AppError, PreparedRun
 from caecilia_harness.core.models import Action, Actor, Event, GateReport
 from caecilia_harness.interfaces.cli import _ctrl_c, _drive, app, exit_code_for, parse_check
 from caecilia_harness.interfaces.prompter import TerminalPrompter
@@ -76,6 +76,40 @@ def test_run_rejects_invalid_max_parallel(limit: str) -> None:
     )
     assert result.exit_code == 2
     assert "--max-parallel" in result.output
+
+
+@pytest.mark.parametrize("option", ["--provider-slots", "--exec-slots"])
+@pytest.mark.parametrize("limit", ["0", "-1"])
+def test_run_rejects_invalid_slot_limits(option: str, limit: str) -> None:
+    result = runner.invoke(app, ["run", "goal", "--repo", ".", "--check", "echo hi", option, limit])
+    assert result.exit_code == 2
+    assert "Invalid value" in result.output
+    assert option in result.output
+
+
+@pytest.mark.parametrize("from_plan", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+def test_run_passes_slot_limits_to_application(
+    monkeypatch: pytest.MonkeyPatch, from_plan: bool, override: bool
+) -> None:
+    from caecilia_harness.interfaces import cli
+
+    received: dict[str, object] = {}
+
+    async def prepare(*args: object, **kwargs: object) -> PreparedRun:
+        received.update(kwargs)
+        raise AppError("test stopped before execution")
+
+    monkeypatch.setattr(cli, "prepare_run_from_plan" if from_plan else "prepare_run", prepare)
+    args = ["run", "--repo", ".", "--check", "echo hi"]
+    args.extend(["--plan", "plan.toml"] if from_plan else ["goal"])
+    if override:
+        args.extend(["--provider-slots", "3", "--exec-slots", "4"])
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+    assert "test stopped" in result.output
+    assert received["provider_slots"] == (3 if override else 2)
+    assert received["exec_slots"] == (4 if override else 2)
 
 
 async def test_ctrl_c_soft_then_hard_cancels_waiting_run() -> None:

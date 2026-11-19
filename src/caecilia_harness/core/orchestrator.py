@@ -23,6 +23,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from caecilia_harness.core.clock import Clock, SystemClock
+from caecilia_harness.core.globs import matches, normalize_write_set
 from caecilia_harness.core.graph import (
     GraphNode,
     blocked_by_failure,
@@ -147,6 +148,8 @@ class Orchestrator:
         self._outbox_in_flight: set[int] = set()
         self._merge_slot = asyncio.Lock()
         self._worker_slot_freed = asyncio.Event()
+        self._run_usage: dict[str, dict[str, int]] = {}
+        self._budget_stopped: set[str] = set()
 
     def close(self) -> None:
         """Release resources handed over by bootstrap (DB connection, writer lock)."""
@@ -231,6 +234,7 @@ class Orchestrator:
         order = topological_order(_nodes(t.spec for t in tasks))
         write_sets = {t.id: list(t.spec.write_set) for t in tasks}
         limit = self._max_parallel(run_id)
+        self._restore_run_usage(run_id)
         drivers: dict[str, asyncio.Task[None]] = {}
         try:
             while True:
@@ -255,10 +259,47 @@ class Orchestrator:
             await self._abort(drivers)
             raise
         status = self._run_status(run_id)
-        self.store.append(
-            [self._event(f"run:{run_id}", "run.finished", {"run_id": run_id, "status": status})]
-        )
+        payload: dict[str, Any] = {"run_id": run_id, "status": status}
+        if run_id in self._budget_stopped:
+            payload["reason"] = "run token budget exceeded"
+        self.store.append([self._event(f"run:{run_id}", "run.finished", payload)])
         return status
+
+    def _restore_run_usage(self, run_id: str) -> None:
+        """Rebuild token totals from durable usage, including attempts before this process."""
+        used = {"input_tokens": 0, "output_tokens": 0}
+        for task in self.store.list_tasks(run_id):
+            for event in self.store.read_stream(f"task:{task.id}"):
+                if event.type == "usage.recorded":
+                    for name in used:
+                        used[name] += int(event.payload.get(name, 0))
+        self._run_usage[run_id] = used
+        if any(e.type == "run.budget_exceeded" for e in self.store.read_stream(f"run:{run_id}")):
+            self._budget_stopped.add(run_id)
+        self._check_run_budget(run_id)
+
+    def _check_run_budget(self, run_id: str) -> None:
+        used = self._run_usage[run_id]
+        limit = Budget.model_validate(self._run_info(run_id).get("budget") or {})
+        if run_id in self._budget_stopped or not any(
+            maximum is not None and used[name] > maximum
+            for name, maximum in (
+                ("input_tokens", limit.max_input_tokens),
+                ("output_tokens", limit.max_output_tokens),
+            )
+        ):
+            return
+        self.store.append(
+            [
+                self._event(
+                    f"run:{run_id}",
+                    "run.budget_exceeded",
+                    {"used": dict(used), "limit": limit.model_dump()},
+                    idempotency_key=f"{run_id}:budget_exceeded",
+                )
+            ]
+        )
+        self._budget_stopped.add(run_id)
 
     def _max_parallel(self, run_id: str) -> int:
         """`max_parallel` recorded with the run (CLI option or plan), else the default (D11)."""
@@ -286,6 +327,8 @@ class Orchestrator:
             if task_id not in drivers and states[task_id] not in _NO_DRIVER:
                 drivers[task_id] = self._start_driver(task_id)
 
+        if run_id in self._budget_stopped:
+            return  # existing drivers finish, but no new task receives a lease
         busy = [task_id for task_id in order if states[task_id] in _BUSY]
         running = sum(states[task_id] in _HOLDS_WORKER_SLOT for task_id in order)
         for task_id in order:
@@ -326,6 +369,8 @@ class Orchestrator:
                 await live.worker.result(live.handle)
 
     def _run_status(self, run_id: str) -> str:
+        if run_id in self._budget_stopped:
+            return "needs_human"
         states = {task.state for task in self.store.list_tasks(run_id)}
         if states == {S.DONE}:
             return "done"
@@ -523,6 +568,10 @@ class Orchestrator:
             )
 
     def _lease_and_spawn(self, task: TaskRow) -> None:
+        if task.run_id not in self._run_usage:
+            self._restore_run_usage(task.run_id)
+        if task.run_id in self._budget_stopped:
+            return
         attempt = task.attempts + 1
         revision = task.revision + 1  # the LEASED revision: unique per lease, even on retries
         spawn = OutboxItem(
@@ -598,9 +647,14 @@ class Orchestrator:
             async for event in live.worker.events(live.handle):
                 # ADR-0011: only durable facts are stored; usage is the one M1 records.
                 if event.durable and event.kind == "usage":
+                    if task.run_id not in self._run_usage:
+                        self._restore_run_usage(task.run_id)
                     self._append_task(
                         task.id, [self._event(f"task:{task.id}", "usage.recorded", event.data)]
                     )
+                    for name in self._run_usage[task.run_id]:
+                        self._run_usage[task.run_id][name] += int(event.data.get(name, 0))
+                    self._check_run_budget(task.run_id)
             result = await live.worker.result(live.handle)
         finally:
             heartbeat.cancel()
@@ -685,7 +739,22 @@ class Orchestrator:
             )
             _chaos_hold("MERGING")  # recorded, target not moved yet
 
-        report = await self.gate.check(diff, str(run["target_branch"]), record_merging)
+        patterns = normalize_write_set(task.spec.write_set)
+        outside = [
+            path for path in diff.files_changed if not any(matches(path, p) for p in patterns)
+        ]
+        if outside:
+            report = GateReport(
+                task_id=task.id,
+                passed=False,
+                checks={"write_set": False},
+                output_tail="Files outside write set "
+                + repr(patterns)
+                + ":\n"
+                + "\n".join(outside),
+            )
+        else:
+            report = await self.gate.check(diff, str(run["target_branch"]), record_merging)
         if report.merged_commit:
             _chaos_hold("MERGED")  # target moved, DONE not recorded yet
         task = self.store.get_task(task.id)
