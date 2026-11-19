@@ -76,7 +76,8 @@ class GitWorktreeBackend:
 
         span = f"{ws.base_commit}..{head}"
         patch = (await run_git(["diff", "--binary", span], path)).stdout
-        names = (await run_git(["diff", "--name-only", "-z", span], path)).stdout
+        # Renames must expose both paths: deleting the source also requires write-set permission.
+        names = (await run_git(["diff", "--no-renames", "--name-only", "-z", span], path)).stdout
         files = [name for name in names.decode("utf-8").split("\0") if name]
         return DiffArtifact(
             task_id=ws.task_id,
