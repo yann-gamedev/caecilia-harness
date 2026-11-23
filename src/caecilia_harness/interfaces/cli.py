@@ -40,7 +40,7 @@ from caecilia_harness.core.orchestrator import (
     OrchestratorError,
 )
 from caecilia_harness.interfaces.doctor import run_all
-from caecilia_harness.interfaces.prompter import TerminalPrompter
+from caecilia_harness.interfaces.prompter import TerminalPrompter, stdin_is_tty
 from caecilia_harness.interfaces.render import (
     format_event,
     format_graph,
@@ -51,6 +51,7 @@ from caecilia_harness.interfaces.render import (
 from caecilia_harness.planning.plan import PlanError, load_plan
 from caecilia_harness.planning.planner import PlannerError
 from caecilia_harness.project_config import (
+    CONFIG_NAME,
     CliValues,
     ConfigError,
     MissingOptionError,
@@ -59,6 +60,8 @@ from caecilia_harness.project_config import (
     project_settings,
     repo_root,
     resolve_options,
+    stage_config,
+    write_config,
 )
 from caecilia_harness.project_config import (
     parse_check as parse_check,  # re-exported: moved out of interfaces in CLI-01
@@ -208,10 +211,85 @@ async def _drive(start: Awaitable[PreparedRun], plain: bool) -> str:
         prepared.close()
 
 
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            "-V",
+            is_eager=True,
+            callback=_print_version,
+            help="Cetak versi harness lalu keluar.",
+        ),
+    ] = False,
+) -> None:
+    """Caecilia Harness: AI orchestration harness."""
+
+
 @app.command()
 def version() -> None:
     """Print the harness version."""
     typer.echo(__version__)
+
+
+@app.command()
+def init(
+    check: Annotated[
+        str | None, typer.Option("--check", help='Perintah gate, mis. "python -m pytest".')
+    ] = None,
+    worker: Annotated[
+        WorkerChoice | None, typer.Option("--worker", help="fake atau native.")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Nama model (wajib untuk worker native).")
+    ] = None,
+    repo: RepoOpt = None,
+    force: Annotated[bool, typer.Option("--force", help="Timpa file yang sudah ada.")] = False,
+    git_add: Annotated[
+        bool, typer.Option("--git-add", help="`git add` file baru itu (tidak di-commit).")
+    ] = False,
+) -> None:
+    """Create .caecilia.toml at the repo root, so `caecilia run "<goal>"` needs no options.
+
+    Asks for missing values on a terminal; without one, every value must be given as an option.
+    """
+    try:
+        root = repo_root(repo if repo is not None else Path.cwd())
+    except NotAGitRepoError as exc:
+        raise _fail(str(exc)) from exc
+    if (root / CONFIG_NAME).exists() and not force:
+        raise _fail(f"{root / CONFIG_NAME} sudah ada (pakai --force untuk menimpa)")
+    chosen_worker = worker.value if worker is not None else None
+    if stdin_is_tty():
+        check = check or typer.prompt("Perintah check untuk gate", default="python -m pytest")
+        while chosen_worker not in ("fake", "native"):
+            chosen_worker = str(typer.prompt("Worker (fake/native)", default="native")).strip()
+        if chosen_worker == "native" and not model:
+            model = typer.prompt("Nama model di provider (DeepSeek)")
+    else:
+        chosen_worker = chosen_worker or "native"
+        if not check:
+            raise _fail("tanpa terminal interaktif, --check wajib diberikan")
+        if chosen_worker == "native" and not model:
+            raise _fail("tanpa terminal interaktif, --model wajib untuk worker native")
+    try:
+        config = ProjectConfig(check=check, worker=chosen_worker, model=model)
+        path = write_config(root, config, force=force)
+        if git_add:
+            stage_config(root)
+    except (ValueError, OSError) as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(f"Konfigurasi ditulis ke {path}.")
+    if git_add:
+        typer.echo("File sudah di-`git add` (belum di-commit).")
+    typer.echo('Sekarang cukup: caecilia run "<goal>"')
 
 
 @app.command()

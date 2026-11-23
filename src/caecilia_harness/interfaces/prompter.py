@@ -16,7 +16,7 @@ Echo = Callable[[str], None]
 _TAIL_LINES = 15
 
 
-def _stdin_is_tty() -> bool:
+def stdin_is_tty() -> bool:
     return sys.stdin is not None and sys.stdin.isatty()
 
 
@@ -35,7 +35,7 @@ class TerminalPrompter:
         self,
         policy: ApprovalPolicy | None = None,
         read_line: ReadLine = input,
-        isatty: Callable[[], bool] = _stdin_is_tty,
+        isatty: Callable[[], bool] = stdin_is_tty,
         echo: Echo = _echo,
     ) -> None:
         self.policy = policy

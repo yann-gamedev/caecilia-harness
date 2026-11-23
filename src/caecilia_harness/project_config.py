@@ -246,6 +246,32 @@ def resolve_options(cli: CliValues, config: ProjectConfig | None) -> RunOptions:
     )
 
 
+class ConfigExistsError(ValueError):
+    """`.caecilia.toml` is already there and overwriting was not asked for."""
+
+
+def write_config(root: Path, config: ProjectConfig, force: bool = False) -> Path:
+    """Write `config` to `<root>/.caecilia.toml`; refuse to overwrite unless `force`.
+
+    The text is parsed back before it is written, so the file on disk always loads.
+    """
+    path = root / CONFIG_NAME
+    if path.exists() and not force:
+        raise ConfigExistsError(f"{path} sudah ada (pakai --force untuk menimpa)")
+    text = dump_config(config)
+    parse_config(text, str(path))
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
+def stage_config(root: Path) -> None:
+    """`git add .caecilia.toml` (only when the person asks; never commits)."""
+    git = shutil.which("git")
+    if git is None:
+        raise NotAGitRepoError("git tidak ditemukan di PATH")
+    subprocess.run([git, "add", "--", CONFIG_NAME], cwd=root, check=True, capture_output=True)
+
+
 def project_settings(cwd: Path, repo: Path | None = None) -> tuple[Path, ProjectConfig | None]:
     """The repo to work on (`repo`, else the Git root of `cwd`) and its config, if any."""
     root = repo_root(repo if repo is not None else cwd)
