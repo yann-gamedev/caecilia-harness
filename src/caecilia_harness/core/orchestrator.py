@@ -23,26 +23,32 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from caecilia_harness.core.clock import Clock, SystemClock
-from caecilia_harness.core.globs import matches, normalize_write_set
+from caecilia_harness.core.globs import InvalidPatternError, matches, normalize_write_set
 from caecilia_harness.core.graph import (
     GraphNode,
     blocked_by_failure,
     conflicts,
     ready,
     topological_order,
+    validate_graph,
 )
 from caecilia_harness.core.models import (
     Action,
     Actor,
+    AddTask,
     Budget,
+    CancelTask,
     ContextPack,
     DiffArtifact,
     Event,
     GateReport,
+    GraphOp,
     Lease,
     NewEvent,
     OutboxItem,
+    RetryTask,
     RunHandle,
+    SetBlockers,
     TaskRow,
     TaskSpec,
     TaskStateChange,
@@ -95,6 +101,30 @@ class OrchestratorError(Exception):
     """The orchestrator cannot make progress (e.g. a RUNNING task without a live worker)."""
 
 
+class GraphRevisionError(OrchestratorError):
+    """A graph revision was refused; `problems` lists every reason. Nothing was written."""
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        super().__init__("graph revision refused:" + "".join(f"\n- {p}" for p in self.problems))
+
+
+class GraphRevisionConflictError(OrchestratorError):
+    """The graph changed since the caller read it (compare-and-set on the graph stream)."""
+
+    def __init__(self, expected: int, actual: int) -> None:
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"graph revision is {actual}, not {expected}: read the graph again and retry"
+        )
+
+
+#: A task in these states is being worked on or merged right now; cancelling it from a
+#: revision would race the worker or the gate, so it is refused.
+_IN_PROGRESS = frozenset({S.LEASED, S.RUNNING, S.INTEGRATING})
+
+
 @dataclass
 class _Live:
     worker: WorkerAdapter
@@ -106,6 +136,109 @@ def _nodes(specs: Iterable[TaskSpec]) -> list[GraphNode]:
         GraphNode(id=spec.id, blocked_by=tuple(spec.blocked_by), write_set=tuple(spec.write_set))
         for spec in specs
     ]
+
+
+class _GraphDraft:
+    """An in-memory copy of a run's tasks that revision operations are applied to.
+
+    Problems are collected (not raised) so a refused revision reports all of them. State
+    changes carry the right from-state and revision even when one task is touched twice.
+    """
+
+    def __init__(self, run_id: str, tasks: Sequence[TaskRow], default_worker: str) -> None:
+        self.run_id = run_id
+        self.default_worker = default_worker
+        self.specs: dict[str, TaskSpec] = {t.id: t.spec for t in tasks}
+        self.states: dict[str, TaskState] = {t.id: t.state for t in tasks}
+        self.revisions: dict[str, int] = {t.id: t.revision for t in tasks}
+        self.problems: list[str] = []
+        self.added: set[str] = set()
+        self.touched: set[str] = set()
+        #: (task id, event type, payload) for every event except task.created.
+        self.changes: list[tuple[str, str, dict[str, Any]]] = []
+
+    def full(self, plan_id: str) -> str:
+        return f"{self.run_id}-{plan_id}"
+
+    def apply(self, index: int, op: GraphOp) -> None:
+        where = f"op {index} ({op.op})"
+        if isinstance(op, AddTask):
+            self._add(where, op)
+            return
+        task_id = self.full(op.task_id)
+        if task_id not in self.specs:
+            self.problems.append(f"{where}: task {op.task_id!r} does not exist in this run")
+            return
+        state = self.states[task_id]
+        if isinstance(op, SetBlockers):
+            if state is not S.PENDING:
+                self.problems.append(
+                    f"{where}: task {op.task_id!r} is {state.value}; blockers can only change "
+                    "while it is PENDING"
+                )
+                return
+            blockers = [self.full(b) for b in dict.fromkeys(op.blocked_by)]
+            self.specs[task_id] = self.specs[task_id].model_copy(update={"blocked_by": blockers})
+            if task_id not in self.added:  # an added task is simply created with its final spec
+                payload = {"task_id": task_id, "blocked_by": blockers}
+                self.changes.append((task_id, "task.blockers_changed", payload))
+        elif isinstance(op, CancelTask):
+            if state in TERMINAL or state in _IN_PROGRESS:
+                self.problems.append(
+                    f"{where}: task {op.task_id!r} is {state.value}; only tasks that are not "
+                    "finished and not leased, running or integrating can be cancelled"
+                )
+                return
+            self._change_state(task_id, S.CANCELLED, "dibatalkan lewat revisi graf")
+        elif isinstance(op, RetryTask):
+            if state is not S.NEEDS_HUMAN:
+                self.problems.append(
+                    f"{where}: task {op.task_id!r} is {state.value}; only NEEDS_HUMAN tasks "
+                    "can be retried"
+                )
+                return
+            self._change_state(task_id, S.READY, "dibereskan manusia")
+        self.touched.add(task_id)
+
+    def _add(self, where: str, op: AddTask) -> None:
+        task = op.task
+        task_id = self.full(task.id)
+        if task_id in self.specs:
+            self.problems.append(f"{where}: task {task.id!r} already exists in this run")
+            return
+        try:
+            write_set = normalize_write_set(task.write_set)
+        except InvalidPatternError:
+            write_set = list(task.write_set)  # reported by graph validation as bad_pattern
+        blockers = dict.fromkeys([*task.blocked_by, *op.blocked_by])
+        self.specs[task_id] = TaskSpec(
+            id=task_id,
+            run_id=self.run_id,
+            title=task.title,
+            instructions=task.instructions,
+            acceptance=list(task.acceptance),
+            write_set=write_set,
+            blocked_by=[self.full(b) for b in blockers],
+            idempotent=task.idempotent,
+            worker=task.worker or self.default_worker,
+            budget=task.budget or Budget(),
+        )
+        self.states[task_id] = S.PENDING
+        self.revisions[task_id] = 1
+        self.added.add(task_id)
+        self.touched.add(task_id)
+
+    def _change_state(self, task_id: str, to: TaskState, reason: str) -> None:
+        change = TaskStateChange(
+            task_id=task_id,
+            from_state=self.states[task_id],
+            to_state=to,
+            revision=self.revisions[task_id] + 1,
+            reason=reason,
+        )
+        self.changes.append((task_id, "task.state_changed", change.model_dump(mode="json")))
+        self.states[task_id] = to
+        self.revisions[task_id] += 1
 
 
 def _is_transient(error: str | None) -> bool:
@@ -380,6 +513,95 @@ class Orchestrator:
         if S.FAILED in states:
             return "failed"
         return "cancelled"
+
+    # --- graph revisions (ADR-0003) ---------------------------------------------------------
+
+    def graph_revision(self, run_id: str) -> int:
+        """Revision of the run's graph: that of the last `graph.revised` (0 if none)."""
+        revisions = [
+            e for e in self.store.read_stream(f"graph:{run_id}") if e.type == "graph.revised"
+        ]
+        return int(revisions[-1].payload["revision"]) if revisions else 0
+
+    def revise_graph(self, run_id: str, ops: Sequence[GraphOp], expected_revision: int) -> int:
+        """Apply `ops` to a stopped run's graph as one new revision. Returns the new revision.
+
+        Compare-and-set: `expected_revision` must be the current one, else
+        `GraphRevisionConflictError`. All operations are applied to an in-memory copy and the
+        whole resulting graph is validated; any problem raises `GraphRevisionError` listing all
+        of them and nothing is written. Otherwise one append (CAS on the graph stream and every
+        touched task stream) records the operations' events, `graph.revised`, and
+        `run.reopened` if the run had finished. Task ids in `ops` are plan ids.
+
+        Only while the run is not executing (ADR-0002/0013): the caller holds the writer lock.
+        """
+        current = self.graph_revision(run_id)
+        if current != expected_revision:
+            raise GraphRevisionConflictError(expected_revision, current)
+        draft = _GraphDraft(run_id, self.store.list_tasks(run_id), self._default_worker(run_id))
+        for index, op in enumerate(ops, start=1):
+            draft.apply(index, op)
+        nodes = _nodes(draft.specs.values())
+        problems = draft.problems + [
+            f"task {i.task_id}: {i.kind}: {i.detail}" for i in validate_graph(nodes)
+        ]
+        if problems:
+            raise GraphRevisionError(problems)
+
+        order = topological_order(nodes)
+        created = [
+            self._event(
+                f"task:{task_id}",
+                "task.created",
+                {"spec": draft.specs[task_id].model_dump(mode="json")},
+            )
+            for task_id in order
+            if task_id in draft.added  # blockers first: task_deps has foreign keys
+        ]
+        changes = [
+            self._event(f"task:{task_id}", type_, payload)
+            for task_id, type_, payload in draft.changes
+        ]
+        revised = self._event(
+            f"graph:{run_id}",
+            "graph.revised",
+            {
+                "revision": current + 1,
+                "tasks": order,
+                "edges": [[t, b] for t in order for b in draft.specs[t].blocked_by],
+                "ops": [op.model_dump(mode="json") for op in ops],
+            },
+        )
+        events = [*created, *changes, revised]
+        streams = [f"graph:{run_id}", *(f"task:{task_id}" for task_id in sorted(draft.touched))]
+        if self._run_finished(run_id):
+            events.append(self._event(f"run:{run_id}", "run.reopened", {"run_id": run_id}))
+            streams.append(f"run:{run_id}")
+        expect = {stream: self._last_seq(stream) for stream in streams}
+        self.store.append(events, expect=expect)
+        for stream in streams:
+            self._stream_seq.pop(stream, None)  # read again on the next append
+        return current + 1
+
+    def _default_worker(self, run_id: str) -> str:
+        options = self._run_info(run_id).get("options") or {}
+        if options.get("worker_kind"):
+            return str(options["worker_kind"])
+        tasks = self.store.list_tasks(run_id)
+        return tasks[0].spec.worker if tasks else "native"
+
+    def _run_finished(self, run_id: str) -> bool:
+        """True if the run's last finish is newer than its last reopening."""
+        closing = [
+            e.type
+            for e in self.store.read_stream(f"run:{run_id}")
+            if e.type in ("run.finished", "run.reopened")
+        ]
+        return bool(closing) and closing[-1] == "run.finished"
+
+    def _last_seq(self, stream: str) -> int:
+        events = self.store.read_stream(stream)
+        return events[-1].stream_seq if events else 0
 
     async def resume(self, run_id: str) -> str:
         """Recover after a crash, then continue the run from its current state."""
