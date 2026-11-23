@@ -86,15 +86,25 @@ HOLD_ENV = "CAECILIA_TEST_HOLD_AT"
 _HOLD_SECONDS = 60
 
 
-def _chaos_hold(point: str) -> None:
+def _chaos_hold(point: str, task_id: str | None = None) -> None:
     """Test hook for the chaos suite only (tests/chaos): never set this variable otherwise.
 
-    With CAECILIA_TEST_HOLD_AT=<point>, announce the point on stdout and block, so the test
-    can kill the process at an exact, already-committed moment. A no-op without the variable.
+    CAECILIA_TEST_HOLD_AT=<point> holds at that point for any task; <point>@<plan id> only for
+    that task (plan id = the task id after `<run_id>-`). The hook announces itself on stdout
+    and blocks the whole process, so the test can kill it at an exact, already-committed
+    moment. A no-op without the variable.
     """
-    if os.environ.get(HOLD_ENV) == point:
-        print(f"CAECILIA_HOLD {point}", flush=True)
-        time.sleep(_HOLD_SECONDS)
+    wanted = os.environ.get(HOLD_ENV)
+    if not wanted:
+        return
+    want_point, _, want_task = wanted.partition("@")
+    if want_point != point:
+        return
+    # Run ids never contain '-', so the plan id is everything after the first one.
+    if want_task and (task_id is None or task_id.partition("-")[2] != want_task):
+        return
+    print(f"CAECILIA_HOLD {wanted}", flush=True)
+    time.sleep(_HOLD_SECONDS)
 
 
 class OrchestratorError(Exception):
@@ -433,6 +443,7 @@ class Orchestrator:
             ]
         )
         self._budget_stopped.add(run_id)
+        _chaos_hold("BUDGET_EXCEEDED")
 
     def _max_parallel(self, run_id: str) -> int:
         """`max_parallel` recorded with the run (CLI option or plan), else the default (D11)."""
@@ -826,8 +837,13 @@ class Orchestrator:
             self._give_up_spawn(task, f"no worker named {task.spec.worker!r}")
             return
         run = self._run_info(task.run_id)
-        # Later attempts get their own worktree: an earlier one may be kept after a crash.
-        workspace_id = task.id if attempt == 1 else f"{task.id}-{attempt}"
+        # Every lease gets its own worktree: an earlier one may be kept after a crash, even
+        # one whose spawn died before LEASED -> RUNNING (same attempt number, worktree already
+        # made). Named after the lease count, which equals the attempt when nothing crashed.
+        leases = sum(
+            1 for e in self.store.read_stream(f"task:{task.id}") if e.type == "task.lease_acquired"
+        )
+        workspace_id = task.id if leases <= 1 else f"{task.id}-{leases}"
         try:
             # ADR-0013: the base is the target's head *now*, so a task sees its blockers' merges.
             base = await self.gate.branch_head(str(run["target_branch"]))
@@ -959,7 +975,7 @@ class Orchestrator:
                 task.id,
                 [self._event(f"task:{task.id}", "gate.merging", {"old": old, "new": new})],
             )
-            _chaos_hold("MERGING")  # recorded, target not moved yet
+            _chaos_hold("MERGING", task.id)  # recorded, target not moved yet
 
         patterns = normalize_write_set(task.spec.write_set)
         outside = [
@@ -978,7 +994,7 @@ class Orchestrator:
         else:
             report = await self.gate.check(diff, str(run["target_branch"]), record_merging)
         if report.merged_commit:
-            _chaos_hold("MERGED")  # target moved, DONE not recorded yet
+            _chaos_hold("MERGED", task.id)  # target moved, DONE not recorded yet
         task = self.store.get_task(task.id)
         payload = {"report": report.model_dump(mode="json")}
         passed = self._event(f"task:{task.id}", "gate.passed", payload)
@@ -1047,7 +1063,7 @@ class Orchestrator:
         self._append_task(task.id, [*before, event, *after], outbox)
         if task.state in _HOLDS_WORKER_SLOT and to not in _HOLDS_WORKER_SLOT:
             self._worker_slot_freed.set()
-        _chaos_hold(to.value)
+        _chaos_hold(to.value, task.id)
         return self.store.get_task(task.id)
 
     def _append_task(

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
-from caecilia_harness.core.models import Budget, ContextPack, TaskSpec, Workspace
+from caecilia_harness.core.models import Budget, ContextPack, TaskSpec, Usage, Workspace
 from caecilia_harness.workers.fake import DEFAULT_FILE, FakeWorker, default_file
 
 
@@ -57,3 +58,21 @@ async def test_fail_with_applies_to_every_task(tmp_path: Path) -> None:
     worker = FakeWorker(fail_with="transient", fail_for={"api": "permanent"})
     assert await _run(worker, _spec("api", ["api/**"]), tmp_path / "a") == (False, "permanent")
     assert await _run(worker, _spec("web", ["web/**"]), tmp_path / "w") == (False, "transient")
+
+
+async def test_per_task_delay_and_usage(tmp_path: Path) -> None:
+    worker = FakeWorker(
+        delays={"slow": 0.3}, delay_s=0.0, usage=Usage(input_tokens=4, output_tokens=2)
+    )
+    spec = _spec("slow", ["slow/**"])
+    ws = Workspace(task_id=spec.id, path=str(tmp_path), branch="b", base_commit="c")
+    started = time.monotonic()
+    handle = await worker.start(spec, ContextPack(task=spec), ws, Budget())
+    events = [event async for event in worker.events(handle)]
+    assert time.monotonic() - started >= 0.25
+    [usage] = [event for event in events if event.kind == "usage"]
+    assert usage.durable and usage.data == {"input_tokens": 4, "output_tokens": 2, "cost_usd": None}
+    assert await _run(FakeWorker(delays={"slow": 5}), _spec("fast", ["f/**"]), tmp_path / "f") == (
+        True,
+        None,
+    )

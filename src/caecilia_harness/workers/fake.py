@@ -16,6 +16,7 @@ from caecilia_harness.core.models import (
     ContextPack,
     RunHandle,
     TaskSpec,
+    Usage,
     WorkerCapabilities,
     WorkerEvent,
     WorkerResult,
@@ -75,10 +76,16 @@ class FakeWorker:
         fail_with: str | None = None,
         spawn_log: Path | None = None,
         fail_for: Mapping[str, str] | None = None,
+        delays: Mapping[str, float] | None = None,
+        usage: Usage | None = None,
     ) -> None:
         self.files = files
         self.fail_for = dict(fail_for or {})
         self.delay_s = delay_s
+        #: Per-task delay by plan id, overriding `delay_s` (parallel and chaos tests).
+        self.delays = dict(delays or {})
+        #: Reported once per attempt as a durable usage event (run budget tests).
+        self.usage = usage
         self.fail_with = fail_with
         self.spawn_log = spawn_log
         #: Every context pack received, in start order (tests inspect handoff notes).
@@ -120,8 +127,9 @@ class FakeWorker:
             target = worktree / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8", newline="\n")
-        if self.delay_s:
-            await asyncio.sleep(self.delay_s)
+        delay = self.delays.get(_short_id(spec), self.delay_s)
+        if delay:
+            await asyncio.sleep(delay)
         error = self.fail_for.get(_short_id(spec), self.fail_with)
         if error is not None:
             return WorkerResult(task_id=spec.id, success=False, summary="", error=error)
@@ -131,6 +139,8 @@ class FakeWorker:
         run = self._get(handle)
         yield WorkerEvent(kind="progress", data={"status": "started"})
         result = await self._finish(run, handle)
+        if self.usage is not None:
+            yield WorkerEvent(kind="usage", data=self.usage.model_dump(), durable=True)
         yield WorkerEvent(
             kind="progress",
             data={"status": "finished", "success": result.success, "error": result.error},

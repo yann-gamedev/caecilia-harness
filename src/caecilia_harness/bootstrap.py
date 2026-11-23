@@ -17,7 +17,15 @@ from typing import Any, Literal
 
 from caecilia_harness import artifacts
 from caecilia_harness.core.graph import GraphNode, topological_order
-from caecilia_harness.core.models import Action, Event, GateReport, GraphOp, TaskDraft, Workspace
+from caecilia_harness.core.models import (
+    Action,
+    Event,
+    GateReport,
+    GraphOp,
+    TaskDraft,
+    Usage,
+    Workspace,
+)
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
 from caecilia_harness.core.prompting import SerializedPrompter
@@ -81,10 +89,29 @@ def exec_approver(orchestrator: Orchestrator) -> Approver:
     return approve
 
 
-def _fake_spawn_log() -> Path | None:
-    # Chaos suite only: lets tests count worker starts across killed processes.
-    value = os.environ.get("CAECILIA_FAKE_SPAWN_LOG")
-    return Path(value) if value else None
+def _fake_worker() -> FakeWorker:
+    """The demo/test worker. Chaos suite only: environment variables shape it, because the
+    chaos tests drive real `caecilia` processes and cannot pass objects in.
+
+    - CAECILIA_FAKE_SPAWN_LOG=<file>: one line per worker start (counts duplicate spawns)
+    - CAECILIA_FAKE_DELAYS=a=0.2,b=3,*=1: seconds of work per plan id (`*` = any other task)
+    - CAECILIA_FAKE_USAGE=<input>,<output>: tokens reported by every attempt (run budgets)
+    """
+    spawn_log = os.environ.get("CAECILIA_FAKE_SPAWN_LOG")
+    delays: dict[str, float] = {}
+    for item in filter(None, os.environ.get("CAECILIA_FAKE_DELAYS", "").split(",")):
+        name, _, seconds = item.partition("=")
+        delays[name.strip()] = float(seconds)
+    usage = None
+    if os.environ.get("CAECILIA_FAKE_USAGE"):
+        tokens_in, _, tokens_out = os.environ["CAECILIA_FAKE_USAGE"].partition(",")
+        usage = Usage(input_tokens=int(tokens_in), output_tokens=int(tokens_out))
+    return FakeWorker(
+        spawn_log=Path(spawn_log) if spawn_log else None,
+        delay_s=delays.pop("*", 0.0),
+        delays=delays,
+        usage=usage,
+    )
 
 
 def make_provider(api_key: str) -> ModelProvider:
@@ -146,7 +173,7 @@ def _assemble(
             f"worker tidak dikenal: {', '.join(unknown)} (tersedia: {', '.join(WORKER_KINDS)})"
         )
     orchestrator_ref: list[Orchestrator] = []
-    workers: dict[str, WorkerAdapter] = {"fake": FakeWorker(spawn_log=_fake_spawn_log())}
+    workers: dict[str, WorkerAdapter] = {"fake": _fake_worker()}
     if "native" in worker_kinds:
         # Fails here, before any lock or DB is touched, if the key or model is missing.
         workers["native"] = _native_worker(

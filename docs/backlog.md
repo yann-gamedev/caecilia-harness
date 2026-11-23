@@ -71,7 +71,7 @@ Checklist:
 - [x] M2-04
 - [x] M2-05
 - [x] M2-06
-- [ ] M2-07
+- [x] M2-07
 - [ ] M2-08
 
 Diterima jika (milestone): dua task independen berjalan bertumpuk waktunya dengan log terpisah; graf
@@ -138,3 +138,4 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
 - 2026-11-19 — M2-04 selesai: `LimitedProvider` dan slot exec bersama (diambil setelah approval), opsi `--provider-slots`/`--exec-slots` tersimpan untuk resume, budget token run dari event durable dengan penghentian lease baru, serta penolakan diff di luar write set sebelum gate dengan laporan rework. Pembatalan exec menunggu proses dan pembaca output selesai sebelum melepas slot.
 - 2026-11-23 — M2-05 selesai: `Planner` (tool `submit_plan` tanpa `$ref`, validasi graf, sampai 3 ronde perbaikan), `summarize_repo` berlabel data tak tepercaya, `security/untrusted.py`, `bootstrap.plan_goal`, dan `caecilia plan GOAL` di grup yang sama dengan `plan validate`.
 - 2026-11-23 — M2-06 selesai: operasi revisi graf (`add_task`, `set_blockers`, `cancel_task`, `retry_task`), `Orchestrator.revise_graph` atomik dengan CAS dan validasi seluruh graf, proyeksi `task.blockers_changed`/`run.reopened`, perintah `caecilia graph show/add/deps/cancel/retry`.
+- 2026-11-23 — M2-07 selesai: hook chaos `TITIK@id` dan `BUDGET_EXCEEDED`, `check_invariants`, 5 skenario crash paralel, uji stres slot (5 seed + pertanyaan tertunda). Bug recovery ditemukan dan diperbaiki: spawn yang terputus setelah worktree dibuat membuat lease berikutnya gagal; nama worktree kini per lease.
