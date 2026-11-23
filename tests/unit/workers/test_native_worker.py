@@ -23,7 +23,7 @@ from caecilia_harness.core.models import (
 from caecilia_harness.core.ports import WorkerAdapter
 from caecilia_harness.providers.fake import FakeProvider
 from caecilia_harness.security.approval import ApprovalPolicy, ExecRequest
-from caecilia_harness.workers.native.prompts import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
+from caecilia_harness.security.untrusted import UNTRUSTED_CLOSE, UNTRUSTED_OPEN
 from caecilia_harness.workers.native.worker import NativeWorker
 from caecilia_harness.workspace.exec_runner import ExecRunner
 

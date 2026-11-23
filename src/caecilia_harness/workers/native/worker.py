@@ -29,12 +29,9 @@ from caecilia_harness.core.models import (
     Workspace,
 )
 from caecilia_harness.core.ports import ModelProvider
+from caecilia_harness.security.untrusted import wrap_untrusted
 from caecilia_harness.workers.errors import UnknownRunHandleError
-from caecilia_harness.workers.native.prompts import (
-    build_system_prompt,
-    build_user_message,
-    wrap_untrusted,
-)
+from caecilia_harness.workers.native.prompts import build_system_prompt, build_user_message
 from caecilia_harness.workers.native.tools import TOOL_SPECS, ToolContext, dispatch
 from caecilia_harness.workspace.exec_runner import ExecRunner
 
