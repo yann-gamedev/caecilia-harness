@@ -14,8 +14,12 @@ from keyring.errors import KeyringError
 
 SERVICE = "caecilia-harness"
 
-#: provider id -> environment variable accepted as a fallback.
-ENV_VARS: dict[str, str] = {"deepseek": "DEEPSEEK_API_KEY"}
+#: provider id -> environment variable accepted as a fallback. A key listed here can be stored,
+#: read and redacted; whether a model provider uses it is decided in bootstrap (D2: DeepSeek).
+ENV_VARS: dict[str, str] = {
+    "deepseek": "DEEPSEEK_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
 
 _known_keys: set[str] = set()
 
