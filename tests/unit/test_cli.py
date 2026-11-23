@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from pathlib import Path
 from types import FrameType
 from typing import cast
 
@@ -21,6 +22,7 @@ from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event
 from caecilia_harness.security.approval import ApprovalPolicy
 from tests.conftest import MemoryKeyring
+from tests.integration.conftest import git_repo  # noqa: F401 - fixture
 
 runner = CliRunner()
 
@@ -32,17 +34,12 @@ def test_every_command_has_help(command: str) -> None:
     assert "Usage" in result.output
 
 
-@pytest.mark.parametrize(
-    ("args", "missing"),
-    [
-        (["run", "goal", "--check", "echo hi"], "--repo"),
-        (["run", "goal", "--repo", "."], "--check"),
-    ],
-)
-def test_run_requires_repo_and_check(args: list[str], missing: str) -> None:
-    result = runner.invoke(app, args)
-    assert result.exit_code != 0
-    assert missing in result.output
+def test_run_needs_a_repo_and_a_check_from_somewhere(git_repo: Path) -> None:  # noqa: F811
+    # --repo and --check are optional (CLI-01), but some repo and some check must be found.
+    outside = runner.invoke(app, ["run", "goal", "--check", "echo hi", "--worker", "fake"])
+    assert outside.exit_code == 1 and "--repo" in outside.output
+    no_check = runner.invoke(app, ["run", "goal", "--repo", str(git_repo), "--worker", "fake"])
+    assert no_check.exit_code == 1 and "--check" in no_check.output
 
 
 @pytest.mark.parametrize(
@@ -90,7 +87,10 @@ def test_run_rejects_invalid_slot_limits(option: str, limit: str) -> None:
 @pytest.mark.parametrize("from_plan", [False, True])
 @pytest.mark.parametrize("override", [False, True])
 def test_run_passes_slot_limits_to_application(
-    monkeypatch: pytest.MonkeyPatch, from_plan: bool, override: bool
+    monkeypatch: pytest.MonkeyPatch,
+    git_repo: Path,  # noqa: F811 - the imported fixture
+    from_plan: bool,
+    override: bool,
 ) -> None:
     from caecilia_harness.interfaces import cli
 
@@ -101,7 +101,7 @@ def test_run_passes_slot_limits_to_application(
         raise AppError("test stopped before execution")
 
     monkeypatch.setattr(cli, "prepare_run_from_plan" if from_plan else "prepare_run", prepare)
-    args = ["run", "--repo", ".", "--check", "echo hi"]
+    args = ["run", "--repo", str(git_repo), "--check", "echo hi", "--worker", "fake"]
     args.extend(["--plan", "plan.toml"] if from_plan else ["goal"])
     if override:
         args.extend(["--provider-slots", "3", "--exec-slots", "4"])

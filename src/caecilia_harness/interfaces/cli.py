@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import shlex
 import signal
 from collections.abc import Awaitable, Iterator
 from enum import StrEnum
@@ -52,6 +50,19 @@ from caecilia_harness.interfaces.render import (
 )
 from caecilia_harness.planning.plan import PlanError, load_plan
 from caecilia_harness.planning.planner import PlannerError
+from caecilia_harness.project_config import (
+    CliValues,
+    ConfigError,
+    MissingOptionError,
+    NotAGitRepoError,
+    ProjectConfig,
+    project_settings,
+    repo_root,
+    resolve_options,
+)
+from caecilia_harness.project_config import (
+    parse_check as parse_check,  # re-exported: moved out of interfaces in CLI-01
+)
 from caecilia_harness.security import keys
 from caecilia_harness.store.lock import WriterLockedError
 
@@ -90,22 +101,36 @@ def exit_code_for(status: str) -> int:
     return _EXIT.get(status, 1)
 
 
-def parse_check(cmd: str, posix: bool | None = None) -> list[str]:
-    """Split a --check command into argv.
-
-    Windows uses non-POSIX rules so backslashes in paths survive; quotes wrapping a whole token
-    are then removed, since non-POSIX mode keeps them.
-    """
-    posix = os.name != "nt" if posix is None else posix
-    tokens = shlex.split(cmd, posix=posix)
-    if not posix:
-        tokens = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
-    return tokens
-
-
 def _fail(message: str) -> typer.Exit:
     typer.echo(f"Error: {keys.redact(message)}", err=True)
     return typer.Exit(code=1)
+
+
+RepoOpt = Annotated[
+    Path | None,
+    typer.Option("--repo", help="Repo Git (default: repo dari folder kerja saat ini)."),
+]
+
+
+def _project(repo: Path | None) -> tuple[Path, ProjectConfig | None]:
+    """The repo to work on and its `.caecilia.toml` (ADR-0015: the working folder decides)."""
+    try:
+        return project_settings(Path.cwd(), repo)
+    except (NotAGitRepoError, ConfigError) as exc:
+        raise _fail(str(exc)) from exc
+
+
+def _runs_repo(repo: Path | None) -> Path | None:
+    """Repo whose runs `status`/`resume` look at: `--repo`, else the working folder's repo.
+
+    Outside any repo (and without --repo) every run is shown, as before.
+    """
+    try:
+        return repo_root(repo if repo is not None else Path.cwd())
+    except NotAGitRepoError as exc:
+        if repo is not None:
+            raise _fail(str(exc)) from exc
+        return None
 
 
 @contextlib.contextmanager
@@ -201,13 +226,17 @@ def doctor() -> None:
 
 @app.command()
 def run(
-    repo: Annotated[Path, typer.Option("--repo", help="Repo Git yang dikerjakan.")],
+    repo: RepoOpt = None,
     check: Annotated[
-        str, typer.Option("--check", help='Perintah pengecekan gate, mis. "uv run pytest".')
-    ],
+        str | None,
+        typer.Option(
+            "--check", help='Perintah pengecekan gate, mis. "uv run pytest" (atau `check`).'
+        ),
+    ] = None,
     worker: Annotated[
-        WorkerChoice, typer.Option("--worker", help="Worker yang dipakai.")
-    ] = WorkerChoice.native,
+        WorkerChoice | None,
+        typer.Option("--worker", help="Worker yang dipakai (atau `worker`; default native)."),
+    ] = None,
     target: Annotated[
         str | None,
         typer.Option("--target", help="Branch target (default: branch aktif di repo)."),
@@ -240,54 +269,74 @@ def run(
         str | None, typer.Argument(help="Apa yang harus dikerjakan (atau pakai --plan).")
     ] = None,
     provider_slots: Annotated[
-        int,
-        typer.Option("--provider-slots", min=1, help="Request model bersamaan per provider."),
-    ] = 2,
+        int | None,
+        typer.Option(
+            "--provider-slots", min=1, help="Request model bersamaan per provider (default 2)."
+        ),
+    ] = None,
     exec_slots: Annotated[
-        int,
-        typer.Option("--exec-slots", min=1, help="Perintah exec bersamaan di seluruh task."),
-    ] = 2,
+        int | None,
+        typer.Option(
+            "--exec-slots", min=1, help="Perintah exec bersamaan di seluruh task (default 2)."
+        ),
+    ] = None,
 ) -> None:
     """Start a run from GOAL (one task) or --plan FILE (several tasks with dependencies).
 
+    The repo is the one around the working folder unless --repo is given. Options not given here
+    come from `.caecilia.toml` (`caecilia init`), then from the defaults.
     Exit code: 0 = DONE, 2 = NEEDS_HUMAN, 1 = otherwise. With --plan, --worker is the default
     for tasks that do not name a worker, and --target overrides the plan's target.
     """
     if (goal is None) == (plan is None):
         raise _fail("sebutkan tepat satu: GOAL atau --plan FILE")
-    argv = parse_check(check)
-    if not argv:
-        raise _fail("--check tidak boleh kosong")
+    root, config = _project(repo)
+    cli = CliValues(
+        check=check,
+        worker=worker.value if worker is not None else None,
+        model=model,
+        max_parallel=max_parallel,
+        provider_slots=provider_slots,
+        exec_slots=exec_slots,
+        target=target,
+    )
+    try:
+        options = resolve_options(cli, config)
+        argv = options.require_check()
+        if options.worker == "native" and not options.model:
+            raise MissingOptionError("--model", "model", "wajib untuk worker native")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
     if plan is not None:
         start = prepare_run_from_plan(
             plan,
-            repo,
+            root,
             argv,
             TerminalPrompter(),
-            worker_kind=worker.value,
-            target=target,
+            worker_kind=options.worker,
+            target=options.target,
             auto_merge=auto_merge,
             unsafe_no_sandbox=unsafe_no_sandbox,
-            model=model,
-            max_parallel=max_parallel,
-            provider_slots=provider_slots,
-            exec_slots=exec_slots,
+            model=options.model,
+            max_parallel=options.max_parallel,
+            provider_slots=options.provider_slots,
+            exec_slots=options.exec_slots,
         )
     else:
         assert goal is not None  # noqa: S101 - checked above
         start = prepare_run(
             goal,
-            repo,
+            root,
             argv,
             TerminalPrompter(),
-            worker_kind=worker.value,
-            target=target,
+            worker_kind=options.worker,
+            target=options.target,
             auto_merge=auto_merge,
             unsafe_no_sandbox=unsafe_no_sandbox,
-            model=model,
-            max_parallel=max_parallel,
-            provider_slots=provider_slots,
-            exec_slots=exec_slots,
+            model=options.model,
+            max_parallel=options.max_parallel,
+            provider_slots=options.provider_slots,
+            exec_slots=options.exec_slots,
         )
     try:
         status = asyncio.run(_drive(start, plain))
@@ -305,9 +354,10 @@ def resume(
         bool, typer.Option("--unsafe-no-sandbox", help="Izinkan exec tanpa sandbox.")
     ] = False,
     plain: PlainOpt = False,
+    repo: RepoOpt = None,
 ) -> None:
-    """Recover after a crash and continue the latest unfinished run (or --run)."""
-    start = resume_run(TerminalPrompter(), run_id, unsafe_no_sandbox)
+    """Recover after a crash and continue the latest unfinished run of this repo (or --run)."""
+    start = resume_run(TerminalPrompter(), run_id, unsafe_no_sandbox, repo=_runs_repo(repo))
     try:
         status = asyncio.run(_drive(start, plain))
     except _USER_ERRORS as exc:
@@ -321,10 +371,11 @@ def status(
         str | None, typer.Option("--run", help="Run yang ditampilkan (default: terakhir).")
     ] = None,
     plain: PlainOpt = False,
+    repo: RepoOpt = None,
 ) -> None:
-    """Show a run and its tasks. Read-only: works while another run is in progress."""
+    """Show this repo's latest run (or --run) and its tasks. Read-only: works during a run."""
     try:
-        current = get_run_status(run_id)
+        current = get_run_status(run_id, repo=_runs_repo(repo))
     except AppError as exc:
         raise _fail(str(exc)) from exc
     if current is None:
@@ -372,8 +423,10 @@ app.add_typer(plan_app, name="plan")
 @plan_app.command("create")
 def plan_create(
     goal: Annotated[str, typer.Argument(help="Tujuan yang dipecah menjadi task.")],
-    repo: Annotated[Path, typer.Option("--repo", help="Repo Git yang direncanakan.")],
-    model: Annotated[str, typer.Option("--model", help="Nama model di provider.")],
+    repo: RepoOpt = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Nama model di provider (atau `model`).")
+    ] = None,
     out: Annotated[Path, typer.Option("--out", help="File plan yang ditulis.")] = Path("plan.toml"),
     max_tasks: Annotated[
         int, typer.Option("--max-tasks", min=1, help="Jumlah task paling banyak.")
@@ -382,8 +435,17 @@ def plan_create(
     plain: PlainOpt = False,
 ) -> None:
     """Let the model split GOAL into a plan.toml. Nothing is run: review the file first."""
+    root, config = _project(repo)
     try:
-        result = asyncio.run(plan_goal(goal, repo, model, out, max_tasks=max_tasks, force=force))
+        options = resolve_options(CliValues(model=model), config)
+        if not options.model:
+            raise MissingOptionError("--model", "model")
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    try:
+        result = asyncio.run(
+            plan_goal(goal, root, options.model, out, max_tasks=max_tasks, force=force)
+        )
     except PlannerError as exc:
         typer.echo(f"Error: {keys.redact(str(exc))}", err=True)
         raise typer.Exit(code=1) from exc
@@ -398,7 +460,8 @@ def plan_create(
         f"token in {usage.input_tokens} / out {usage.output_tokens}."
     )
     typer.echo(f"Tinjau dan edit {out} lebih dulu, lalu jalankan:")
-    typer.echo(f'  caecilia run --plan {out} --repo {repo} --check "<perintah cek>"')
+    check_hint = "" if options.check else ' --check "<perintah cek>"'
+    typer.echo(f"  caecilia run --plan {out}{check_hint}")
 
 
 @plan_app.command("validate")

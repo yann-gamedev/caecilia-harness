@@ -29,7 +29,10 @@ PLANS = ROOT / "tests" / "fixtures" / "plans"
 
 def _architecture_example() -> str:
     text = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
-    [block] = re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL)
+    # The doc also shows a `.caecilia.toml`; the plan example is the block with tasks.
+    [block] = [
+        b for b in re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL) if "[[task]]" in b
+    ]
     return block
 
 

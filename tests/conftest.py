@@ -14,6 +14,15 @@ _LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
 @pytest.fixture(autouse=True)
+def neutral_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test starts outside any Git repo (CLI-01: the working folder picks the repo).
+
+    Otherwise commands would find the harness repo itself, which pytest runs from.
+    """
+    monkeypatch.chdir(tmp_path)
+
+
+@pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Every test gets its own CAECILIA_HOME so nothing touches the real one."""
     home = tmp_path / "caecilia-home"

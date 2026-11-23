@@ -137,7 +137,7 @@ def test_plan_takes_its_model_from_the_config(
     assert (Path.cwd() / "plan.toml").is_file()  # relative paths follow the working folder
 
 
-# --- init -----------------------------------------------------------------------------------------
+# --- init ---
 
 
 def test_init_without_a_terminal_uses_the_options(
@@ -194,7 +194,7 @@ def test_init_outside_a_git_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert result.exit_code == 1 and "bukan bagian dari repo Git" in result.output
 
 
-# --- version and doctor ----------------------------------------------------------------------------
+# --- version and doctor ---
 
 
 @pytest.mark.parametrize("flag", ["--version", "-V"])
@@ -218,9 +218,9 @@ def test_doctor_checks_the_project_config_and_its_key(
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-CANARY")
     with_key = runner.invoke(app, ["doctor"])
     assert "sk-test-CANARY" not in with_key.output
-    assert any(l.startswith("[ok]") and "api-key" in l for l in with_key.output.splitlines())
+    assert any(x.startswith("[ok]") and "api-key" in x for x in with_key.output.splitlines())
 
     _config(git_repo, "version = 1\nnope = 1\n")
     broken = runner.invoke(app, ["doctor"])
     assert broken.exit_code == 1
-    assert any(l.startswith("[FAIL]") and "config" in l for l in broken.output.splitlines())
+    assert any(x.startswith("[FAIL]") and "config" in x for x in broken.output.splitlines())
