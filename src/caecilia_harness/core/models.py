@@ -6,7 +6,7 @@ Keep these small. Add fields when a backlog task needs them, with a test.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,6 +87,60 @@ class TaskStateChange(Frozen):
     to_state: TaskState
     revision: int
     reason: str | None = None
+
+
+# --- Graph revisions (ADR-0003, ADR-0013) -----------------------------------
+# Task ids in operations are plan ids (without the `<run_id>-` prefix), as people see them.
+
+
+class TaskDraft(Frozen):
+    """A task to add to a run: the same fields as a `[[task]]` in plan.toml.
+
+    Defined in core so revisions do not depend on the `planning` package.
+    """
+
+    id: str
+    title: str
+    instructions: str
+    acceptance: list[str] = Field(default_factory=list)
+    write_set: list[str] = Field(default_factory=list)
+    blocked_by: list[str] = Field(default_factory=list)
+    worker: str | None = None
+    idempotent: bool = True
+    budget: Budget | None = None
+
+
+class AddTask(Frozen):
+    """Add a new PENDING task. Blockers: `task.blocked_by` plus `blocked_by`."""
+
+    op: Literal["add_task"] = "add_task"
+    task: TaskDraft
+    blocked_by: list[str] = Field(default_factory=list)
+
+
+class SetBlockers(Frozen):
+    """Replace the blockers of a task that has not started (PENDING only)."""
+
+    op: Literal["set_blockers"] = "set_blockers"
+    task_id: str
+    blocked_by: list[str]
+
+
+class CancelTask(Frozen):
+    """Cancel a task that is not finished and not being worked on or merged right now."""
+
+    op: Literal["cancel_task"] = "cancel_task"
+    task_id: str
+
+
+class RetryTask(Frozen):
+    """Send a NEEDS_HUMAN task back to READY after a person fixed the problem."""
+
+    op: Literal["retry_task"] = "retry_task"
+    task_id: str
+
+
+GraphOp = Annotated[AddTask | SetBlockers | CancelTask | RetryTask, Field(discriminator="op")]
 
 
 # --- Outbox -----------------------------------------------------------------
