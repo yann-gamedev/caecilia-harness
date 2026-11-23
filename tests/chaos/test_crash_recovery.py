@@ -13,6 +13,7 @@ from caecilia_harness.store.db import open_db
 from caecilia_harness.store.events import SqliteEventStore
 from caecilia_harness.store.projections import rebuild_projections
 from tests.chaos.conftest import Chaos
+from tests.chaos.invariants import check_invariants
 from tests.integration.conftest import git
 
 pytestmark = pytest.mark.chaos
@@ -65,6 +66,7 @@ async def test_kill_then_resume_completes_exactly_once(chaos: Chaos, hold_at: st
     await chaos.start_and_kill_at(hold_at)
 
     code, output = await chaos.resume()
+    check_invariants(db_path(), chaos.repo)
 
     assert code == 0, output
     state, types, rebuild_identical = _task_state_and_types()
@@ -85,6 +87,7 @@ async def test_non_idempotent_task_killed_while_running_needs_human(chaos: Chaos
     await chaos.start_and_kill_at("RUNNING", argv)
 
     code, output = await chaos.resume()
+    check_invariants(db_path(), chaos.repo)
 
     assert code == 2, output
     state, types, rebuild_identical = _task_state_and_types()
