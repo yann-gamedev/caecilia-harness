@@ -94,6 +94,33 @@ def _task_created(conn: sqlite3.Connection, event: Event) -> None:
     )
 
 
+def _task_blockers_changed(conn: sqlite3.Connection, event: Event) -> None:
+    """Replace a PENDING task's blockers, in `task_deps` and in its stored spec."""
+    task_id = event.payload["task_id"]
+    blocked_by = list(event.payload["blocked_by"])
+    row = conn.execute("SELECT state, spec_json FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise ProjectionError(f"task.blockers_changed for unknown task {task_id!r}")
+    if TaskState(row[0]) is not TaskState.PENDING:
+        # There is no transition back to PENDING, so a task that started keeps its blockers.
+        raise ProjectionError(f"task {task_id!r} is {row[0]}; blockers change only while PENDING")
+    spec = TaskSpec.model_validate_json(row[1]).model_copy(update={"blocked_by": blocked_by})
+    conn.execute("UPDATE tasks SET spec_json = ? WHERE id = ?", (spec.model_dump_json(), task_id))
+    conn.execute("DELETE FROM task_deps WHERE task_id = ?", (task_id,))
+    conn.executemany(
+        "INSERT INTO task_deps (task_id, blocker_id) VALUES (?, ?)",
+        [(task_id, blocker) for blocker in blocked_by],
+    )
+
+
+def _run_reopened(conn: sqlite3.Connection, event: Event) -> None:
+    """A stopped run was revised: it is unfinished again, so `resume` finds it."""
+    run_id = event.payload["run_id"]
+    cursor = conn.execute("UPDATE runs SET status = 'running' WHERE id = ?", (run_id,))
+    if cursor.rowcount != 1:
+        raise ProjectionError(f"run.reopened for unknown run {run_id!r}")
+
+
 def _task_state_changed(conn: sqlite3.Connection, event: Event) -> None:
     change = TaskStateChange.model_validate(event.payload)
     row = conn.execute(
@@ -128,6 +155,8 @@ def _task_state_changed(conn: sqlite3.Connection, event: Event) -> None:
 _HANDLERS: dict[str, Projector] = {
     "run.created": _run_created,
     "run.finished": _run_finished,
+    "run.reopened": _run_reopened,
     "task.created": _task_created,
     "task.state_changed": _task_state_changed,
+    "task.blockers_changed": _task_blockers_changed,
 }

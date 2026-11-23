@@ -24,19 +24,28 @@ from caecilia_harness import __version__
 from caecilia_harness.bootstrap import (
     AppError,
     PreparedRun,
+    get_graph,
     get_run_status,
     list_runs,
     plan_goal,
     prepare_run,
     prepare_run_from_plan,
     resume_run,
+    revise_graph,
+    task_draft_from_file,
 )
 from caecilia_harness.core.graph import GraphError
-from caecilia_harness.core.orchestrator import OrchestratorError
+from caecilia_harness.core.models import AddTask, CancelTask, GraphOp, RetryTask, SetBlockers
+from caecilia_harness.core.orchestrator import (
+    GraphRevisionConflictError,
+    GraphRevisionError,
+    OrchestratorError,
+)
 from caecilia_harness.interfaces.doctor import run_all
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import (
     format_event,
+    format_graph,
     format_plan,
     format_runs,
     format_status,
@@ -406,6 +415,113 @@ def plan_validate(
         raise typer.Exit(code=1) from exc
     edges = sum(len(task.blocked_by) for task in loaded.tasks)
     typer.echo(f"Plan valid: {len(loaded.tasks)} task, {edges} dependensi.")
+
+
+graph_app = typer.Typer(
+    no_args_is_help=True,
+    help="Lihat dan ubah graf task sebuah run yang sedang berhenti (lalu `caecilia resume`).",
+)
+app.add_typer(graph_app, name="graph")
+
+RunOpt = Annotated[str, typer.Option("--run", help="Id run.")]
+ExpectOpt = Annotated[
+    int | None,
+    typer.Option("--expect-revision", help="Revisi graf yang diharapkan (untuk skrip)."),
+]
+
+
+def _ids(text: str | None) -> list[str]:
+    """`a, b` -> ["a", "b"]; empty means no blockers."""
+    return [part.strip() for part in (text or "").split(",") if part.strip()]
+
+
+def _revise(run_id: str, ops: list[GraphOp], expect: int | None) -> None:
+    """Write one revision and report it; every failure ends with a clear message and exit 1."""
+    try:
+        revision = revise_graph(run_id, ops, expect)
+    except WriterLockedError as exc:
+        raise _fail(
+            "run sedang dieksekusi oleh proses lain (writer lock dipegang); ubah graf setelah "
+            "run itu berhenti"
+        ) from exc
+    except GraphRevisionConflictError as exc:
+        raise _fail(f"{exc} (lihat `caecilia graph show --run {run_id}`)") from exc
+    except GraphRevisionError as exc:
+        typer.echo("Revisi graf ditolak; tidak ada yang diubah:", err=True)
+        for problem in exc.problems:
+            typer.echo(f"  - {problem}", err=True)
+        raise typer.Exit(code=1) from exc
+    except _USER_ERRORS as exc:
+        raise _fail(str(exc)) from exc
+    typer.echo(
+        f"Revisi graf sekarang: {revision}. Lanjutkan dengan `caecilia resume --run {run_id}`."
+    )
+
+
+@graph_app.command("show")
+def graph_show(
+    run_id: Annotated[
+        str | None, typer.Option("--run", help="Id run (default: run terakhir).")
+    ] = None,
+    plain: PlainOpt = False,
+) -> None:
+    """Show the graph in dependency order with its revision. Read-only: works during a run."""
+    try:
+        view = get_graph(run_id)
+    except _USER_ERRORS as exc:
+        raise _fail(str(exc)) from exc
+    for line in format_graph(view, plain):
+        typer.echo(line)
+
+
+@graph_app.command("add")
+def graph_add(
+    run_id: RunOpt,
+    file: Annotated[Path, typer.Option("--file", help="File berisi satu [[task]].")],
+    blocked_by: Annotated[
+        str | None, typer.Option("--blocked-by", help="Blocker tambahan: a,b (id plan).")
+    ] = None,
+    expect: ExpectOpt = None,
+) -> None:
+    """Add a task to the run."""
+    try:
+        draft = task_draft_from_file(file)
+    except PlanError as exc:
+        raise _fail(str(exc)) from exc
+    _revise(run_id, [AddTask(task=draft, blocked_by=_ids(blocked_by))], expect)
+
+
+@graph_app.command("deps")
+def graph_deps(
+    run_id: RunOpt,
+    task: Annotated[str, typer.Argument(help="Id plan task (yang masih PENDING).")],
+    blocked_by: Annotated[
+        str, typer.Option("--blocked-by", help='Blocker baru: a,b; "" = tanpa blocker.')
+    ],
+    expect: ExpectOpt = None,
+) -> None:
+    """Replace the blockers of a task that has not started."""
+    _revise(run_id, [SetBlockers(task_id=task, blocked_by=_ids(blocked_by))], expect)
+
+
+@graph_app.command("cancel")
+def graph_cancel(
+    run_id: RunOpt,
+    task: Annotated[str, typer.Argument(help="Id plan task.")],
+    expect: ExpectOpt = None,
+) -> None:
+    """Cancel a task that is not finished and not being worked on or merged."""
+    _revise(run_id, [CancelTask(task_id=task)], expect)
+
+
+@graph_app.command("retry")
+def graph_retry(
+    run_id: RunOpt,
+    task: Annotated[str, typer.Argument(help="Id plan task yang NEEDS_HUMAN.")],
+    expect: ExpectOpt = None,
+) -> None:
+    """Send a NEEDS_HUMAN task back to READY after you fixed the problem."""
+    _revise(run_id, [RetryTask(task_id=task)], expect)
 
 
 key_app = typer.Typer(help="Kelola API key provider model (disimpan di keychain OS).")
