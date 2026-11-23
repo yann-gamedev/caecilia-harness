@@ -1,6 +1,6 @@
 # ADR-0012: TUI dulu, GUI desktop menyusul sebagai frontend kedua
 
-- Status: Diterima
+- Status: Diterima (bagian "GUI opsional" diubah oleh ADR-0015: GUI pasti dibangun)
 - Tanggal: 2026-11-11
 
 ## Konteks

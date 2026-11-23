@@ -14,5 +14,7 @@ Setelah diputuskan: isi kolom "Keputusan", lalu bila perlu ubah ADR terkait.
 | D7 | Lisensi dan distribusi | Belum dipilih; belum ada file LICENSE. Jangan publikasikan repo sebelum diputuskan. | |
 | D8 | Nama produk | "Caecilia Harness". Hindari nama/logo DeepSeek, Claude Code, Anthropic, OpenAI. | |
 | D9 | Multi-user di roadmap | Tidak (SQLite lokal, ADR-0002). | |
-| D10 | Bentuk antarmuka | — | **Diputuskan 2026-11-11:** TUI dulu (M7). GUI desktop berjendela menyusul nanti sebagai frontend kedua (M8), dimulai hanya kalau pemilik memutuskan. Lihat ADR-0012. |
+| D10 | Bentuk antarmuka | — | **Diputuskan 2026-11-11, diperbarui 2026-11-23:** perintah global `caecilia` (sesi interaktif + `-p` + subcommand), TUI (M7), lalu GUI desktop yang **pasti** dibangun (M8). Lihat ADR-0012 dan ADR-0015. |
 | D11 | `max_parallel` default | 2 sampai benchmark M2-B (prompt 22) selesai; lalu ditetapkan dari data. | |
+| D12 | Provider model kedua (Gemini) | Belum. Key Gemini sudah bisa disimpan, tetapi belum dipakai worker atau planner. Prompt 23 menunggu keputusan ini. | |
+| D13 | Teknologi GUI desktop | Belum. Prompt 34 (M8-01) menyiapkan perbandingan Tauri / Electron / PySide6 dan spike; pemilik memilih setelahnya. | |
