@@ -111,6 +111,25 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
   - Diterima jika: semua aksi utama TUI (lihat graph, pantau sesi, approve, cancel) tersedia di GUI; TUI
     tetap berfungsi; tidak ada import dari `interfaces/tui` ke GUI atau sebaliknya.
 
+## Bug terbuka
+
+Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, simpan output lengkapnya
+(`uv run pytest tests/chaos/test_parallel_crash.py -p no:randomly > hasil.txt 2>&1`) dan lampirkan.
+
+- [ ] **BUG-01 — Kegagalan sesekali di suite chaos paralel** (`tests/chaos/test_parallel_crash.py`).
+  - Terlihat: 2026-11-23, saat M2-07, **2 kali dari sekitar 7 putaran pertama** setelah perbaikan
+    `fix(core): worktree baru per lease ...` (`df0eb2a`). Keduanya menampilkan `1 failed, 4 passed`.
+  - Tidak diketahui: skenario mana yang gagal dan pesan assert-nya; output kedua putaran itu tidak tersimpan.
+  - Setelahnya: **37 putaran berturut-turut lulus** (PowerShell dan Git Bash, juga saat mesin dibebani tes
+    lain), sehingga kegagalannya belum bisa direproduksi.
+  - Dugaan (belum terbukti): asumsi timing di skenario, misalnya `states["a"] in ("LEASED", "RUNNING")` saat
+    hold `RUNNING@b`, atau `states["b"] == "RUNNING"` saat hold `MERGED@a` dengan delay `b=4`; bisa juga
+    sisa efek recovery yang belum tertutup perbaikan di atas.
+  - Dampak: belum ada bukti merge ganda atau state rusak; invarian (`tests/chaos/invariants.py`) lulus di
+    semua putaran yang outputnya tersimpan.
+  - Selesai jika: penyebabnya diketahui dan diperbaiki dengan tes yang mereproduksinya, atau terbukti hanya
+    asumsi timing di tes lalu skenarionya dibuat deterministik.
+
 ## Log
 
 - 2026-11-10 — M0-01 scaffold dibuat dari audit v0.2.
@@ -139,3 +158,4 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
 - 2026-11-23 — M2-05 selesai: `Planner` (tool `submit_plan` tanpa `$ref`, validasi graf, sampai 3 ronde perbaikan), `summarize_repo` berlabel data tak tepercaya, `security/untrusted.py`, `bootstrap.plan_goal`, dan `caecilia plan GOAL` di grup yang sama dengan `plan validate`.
 - 2026-11-23 — M2-06 selesai: operasi revisi graf (`add_task`, `set_blockers`, `cancel_task`, `retry_task`), `Orchestrator.revise_graph` atomik dengan CAS dan validasi seluruh graf, proyeksi `task.blockers_changed`/`run.reopened`, perintah `caecilia graph show/add/deps/cancel/retry`.
 - 2026-11-23 — M2-07 selesai: hook chaos `TITIK@id` dan `BUDGET_EXCEEDED`, `check_invariants`, 5 skenario crash paralel, uji stres slot (5 seed + pertanyaan tertunda). Bug recovery ditemukan dan diperbaiki: spawn yang terputus setelah worktree dibuat membuat lease berikutnya gagal; nama worktree kini per lease.
+- 2026-11-23 — BUG-01 dicatat: kegagalan sesekali di suite chaos paralel (2 dari ~7 putaran awal, lalu 37 putaran lulus); penyebab belum diketahui.
