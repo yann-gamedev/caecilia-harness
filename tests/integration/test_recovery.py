@@ -272,6 +272,25 @@ async def test_running_with_expired_lease_retries_and_keeps_old_worktree(
     assert store.get_task("t1").attempts == 2
 
 
+async def test_spawn_interrupted_after_the_worktree_was_made(
+    store: SqliteEventStore, git_repo: Path, spawn_log: Path
+) -> None:
+    # Found by the parallel chaos suite (M2-07): the process died inside the spawn, after the
+    # worktree and its branch existed but before LEASED -> RUNNING was recorded. The attempt
+    # number did not change, so the next spawn reused the same worktree name and failed.
+    crashed = Crashed(store, git_repo)
+    crashed.to(S.READY, S.LEASED)
+    await GitWorktreeBackend(git_repo).create("t1", crashed.base)
+
+    orch, _ = _orchestrator(store, git_repo, spawn_log)
+    assert await orch.resume("r1") == "done"
+
+    assert store.get_task("t1").state is S.DONE
+    assert git(git_repo, "show", "main:NOTES.md") == "notes"
+    [started] = [e for e in store.read_stream("task:t1") if e.type == "worker.started"]
+    assert started.payload["workspace_id"] == "t1-2"  # a fresh name for the second lease
+
+
 async def test_running_non_idempotent_needs_human_without_respawn(
     store: SqliteEventStore, git_repo: Path, spawn_log: Path
 ) -> None:

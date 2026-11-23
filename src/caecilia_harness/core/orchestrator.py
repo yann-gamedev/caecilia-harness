@@ -837,8 +837,13 @@ class Orchestrator:
             self._give_up_spawn(task, f"no worker named {task.spec.worker!r}")
             return
         run = self._run_info(task.run_id)
-        # Later attempts get their own worktree: an earlier one may be kept after a crash.
-        workspace_id = task.id if attempt == 1 else f"{task.id}-{attempt}"
+        # Every lease gets its own worktree: an earlier one may be kept after a crash, even
+        # one whose spawn died before LEASED -> RUNNING (same attempt number, worktree already
+        # made). Named after the lease count, which equals the attempt when nothing crashed.
+        leases = sum(
+            1 for e in self.store.read_stream(f"task:{task.id}") if e.type == "task.lease_acquired"
+        )
+        workspace_id = task.id if leases <= 1 else f"{task.id}-{leases}"
         try:
             # ADR-0013: the base is the target's head *now*, so a task sees its blockers' merges.
             base = await self.gate.branch_head(str(run["target_branch"]))
