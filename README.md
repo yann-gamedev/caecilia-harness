@@ -18,18 +18,71 @@ scripts/check.ps1        # Windows
 scripts/check.sh         # Linux/macOS
 ```
 
+## Memasang `caecilia` sebagai perintah global
+
+Supaya `caecilia` bisa diketik langsung di `cmd`, PowerShell, atau bash dari folder proyek mana pun
+(seperti `claude` atau `gemini`), pasang sebagai tool uv:
+
+```sh
+# Dari folder repo harness ini. --editable: perubahan kode langsung berlaku tanpa pasang ulang.
+uv tool install --editable .
+
+# Atau dari path / URL git lain:
+uv tool install C:\path\ke\caecilia-harness
+uv tool install git+https://github.com/<akun>/caecilia-harness
+
+# Kalau setelah itu `caecilia` belum dikenali, tambahkan folder tool uv ke PATH, lalu buka terminal baru:
+uv tool update-shell
+
+caecilia --version                # atau: caecilia -V
+caecilia doctor                   # cek lingkungan, PATH, .caecilia.toml, dan API key
+```
+
+Memperbarui: `uv tool upgrade caecilia-harness` (tidak perlu untuk pemasangan `--editable`).
+Menghapus: `uv tool uninstall caecilia-harness`.
+
+### Konfigurasi proyek (`.caecilia.toml`)
+
+Jalankan sekali di repo yang ingin dikerjakan; file ditulis di root repo:
+
+```sh
+cd C:\proyek\saya
+caecilia init                      # ditanya: perintah check, worker, model
+caecilia init --check "python -m pytest" --worker native --model <model>   # tanpa pertanyaan
+```
+
+Setelah itu cukup:
+
+```sh
+caecilia run "tambahkan endpoint health"
+```
+
+- Repo yang dikerjakan = repo Git dari folder kerja saat ini (juga dari subfolder). `--repo PATH`
+  tetap bisa dipakai.
+- Prioritas nilai: opsi di perintah → `.caecilia.toml` → default. Field yang tersedia: `check`,
+  `worker`, `provider`, `model`, `max_parallel`, `provider_slots`, `exec_slots`, `target`,
+  `allow_commands` (format di `docs/architecture.md`). Field yang tidak dikenal ditolak.
+- **API key tidak pernah disimpan di file ini** (field seperti `api_key` atau `token` ditolak); pakai
+  `caecilia key set <provider>`.
+- `caecilia init` tidak menimpa file yang ada tanpa `--force`, dan tidak pernah meng-commit.
+  `--git-add` hanya menjalankan `git add .caecilia.toml`. File yang belum di-commit tidak menghalangi
+  merge ke branch yang sedang di-checkout.
+- `caecilia status` dan `caecilia resume` memakai run milik repo di folder kerja; di luar repo Git,
+  semua run ditampilkan.
+
 ## Pemakaian CLI
 
 Data harness (database, artefak, worktree) disimpan di `CAECILIA_HOME` (default `~/.caecilia`),
-tidak pernah di dalam repo yang dikerjakan.
+tidak pernah di dalam repo yang dikerjakan. Contoh di bawah memakai `caecilia` global; dari repo
+harness tanpa instalasi, awali dengan `uv run`.
 
 ```sh
-# Jalankan satu task di repo PATH; gate menjalankan --check sebelum merge.
-uv run caecilia run "tambahkan catatan" --repo PATH --check "python -c \"print(1)\"" --worker fake --auto-merge
+# Satu task; gate menjalankan --check (atau `check` di .caecilia.toml) sebelum merge.
+caecilia run "tambahkan catatan" --check "python -c \"print(1)\"" --worker fake --auto-merge
 
-uv run caecilia status            # run terakhir dan task-nya (read-only, aman saat run berjalan)
-uv run caecilia runs              # daftar run terbaru
-uv run caecilia resume            # lanjutkan run yang belum selesai setelah crash
+caecilia status            # run terakhir repo ini dan task-nya (read-only, aman saat run berjalan)
+caecilia runs              # daftar run terbaru
+caecilia resume            # lanjutkan run repo ini yang belum selesai setelah crash
 ```
 
 - `--worker fake` menulis `CAECILIA_FAKE.md` berisi goal; dipakai untuk demo dan tes.
