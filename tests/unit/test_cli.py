@@ -377,6 +377,24 @@ def test_key_status_shows_presence_only(monkeypatch: pytest.MonkeyPatch) -> None
     assert CANARY not in stored.output
 
 
+def test_key_set_gemini(memory_keyring: MemoryKeyring) -> None:
+    result = runner.invoke(app, ["key", "set", "gemini"], input=f"{CANARY}\n")
+    assert result.exit_code == 0, result.output
+    assert "gemini" in result.output
+    assert memory_keyring.passwords == {("caecilia-harness", "gemini"): CANARY}
+    assert CANARY not in result.output
+
+
+def test_key_status_lists_each_provider_on_its_own_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", CANARY)
+    result = runner.invoke(app, ["key", "status"])
+    assert result.exit_code == 0
+    lines = {line.split()[0]: line for line in result.output.splitlines() if line.strip()}
+    assert "tidak ada" in lines["deepseek"]
+    assert "GEMINI_API_KEY" in lines["gemini"]
+    assert CANARY not in result.output
+
+
 def test_key_set_rejects_unknown_provider_and_empty_key(memory_keyring: MemoryKeyring) -> None:
     unknown = runner.invoke(app, ["key", "set", "nope"], input="x\n")
     assert unknown.exit_code == 1 and "tidak dikenal" in unknown.output

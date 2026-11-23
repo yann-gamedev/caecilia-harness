@@ -140,6 +140,9 @@ uv run caecilia run "<goal>" --repo PATH --check "uv run pytest" --worker native
 - Untuk pengembangan, key juga bisa diberikan lewat variabel env `DEEPSEEK_API_KEY` (keychain
   didahulukan). Key tidak pernah dicetak, dicatat di event, atau diteruskan ke perintah yang
   dijalankan worker.
+- Key Gemini juga bisa disimpan dan dibaca dengan cara yang sama (`caecilia key set gemini`, atau
+  variabel env `GEMINI_API_KEY`), dan muncul di `caecilia key status`. Worker native dan planner
+  **belum** memakainya: provider model saat ini tetap DeepSeek (keputusan D2).
 - Setiap perintah yang ingin dijalankan model meminta approval di terminal (`y`/`n`/`a`). Di
   Windows belum ada sandbox, jadi approval selalu ditanyakan kecuali `--unsafe-no-sandbox`.
 
