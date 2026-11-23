@@ -10,7 +10,7 @@ from typing import Any
 
 import typer
 
-from caecilia_harness.bootstrap import RunStatus, RunSummary
+from caecilia_harness.bootstrap import GraphView, RunStatus, RunSummary
 from caecilia_harness.core.models import Event
 from caecilia_harness.planning.plan import Plan, plan_id
 
@@ -41,7 +41,13 @@ def event_summary(event: Event) -> str:
     match event.type:
         case "graph.revised":
             tasks, edges = p.get("tasks") or [], p.get("edges") or []
-            return f"revisi {p.get('revision')}: {len(tasks)} task, {len(edges)} dependensi"
+            summary = f"revisi {p.get('revision')}: {len(tasks)} task, {len(edges)} dependensi"
+            ops = [str(op.get("op")) for op in p.get("ops") or []]
+            return summary + (f" ({', '.join(ops)})" if ops else "")
+        case "task.blockers_changed":
+            return f"blocked_by: {', '.join(p.get('blocked_by') or []) or '-'}"
+        case "run.reopened":
+            return "dibuka lagi setelah revisi graf"
         case "run.created":
             return f"goal: {p.get('goal', '')}"
         case "run.finished":
@@ -132,6 +138,21 @@ def format_status(status: RunStatus, plain: bool) -> list[str]:
     ]
     header = ["TASK", "STATE", "BLOCKED_BY", "ATTEMPTS", "WORKER", "RINGKASAN"]
     return lines + _table(header, rows, plain)
+
+
+def format_graph(view: GraphView, plain: bool) -> list[str]:
+    """A run's graph in topological order, with its current revision."""
+    rows = [
+        [
+            task.plan_id,
+            task.state,
+            ", ".join(task.blocked_by) or "-",
+            ", ".join(task.write_set) or "**",
+        ]
+        for task in view.tasks
+    ]
+    header = [f"Run {view.run_id}  revisi graf {view.revision}", ""]
+    return header + _table(["TASK", "STATE", "BLOCKED_BY", "WRITE_SET"], rows, plain)
 
 
 def format_plan(plan: Plan, plain: bool) -> list[str]:

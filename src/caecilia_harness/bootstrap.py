@@ -9,14 +9,15 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from caecilia_harness import artifacts
-from caecilia_harness.core.models import Action, Event, Workspace
+from caecilia_harness.core.graph import GraphNode, topological_order
+from caecilia_harness.core.models import Action, Event, GateReport, GraphOp, TaskDraft, Workspace
 from caecilia_harness.core.orchestrator import Orchestrator
 from caecilia_harness.core.ports import ModelProvider, UserPrompter, WorkerAdapter
 from caecilia_harness.core.prompting import SerializedPrompter
@@ -26,6 +27,7 @@ from caecilia_harness.planning.plan import (
     Plan,
     dump_plan,
     load_plan,
+    load_task_file,
     parse_plan,
     plan_id,
     plan_to_specs,
@@ -550,6 +552,97 @@ def list_runs(limit: int = 20) -> list[RunSummary]:
         )
         for row in rows
     ]
+
+
+@dataclass(frozen=True)
+class GraphTaskView:
+    plan_id: str
+    state: str
+    blocked_by: list[str]
+    write_set: list[str]
+
+
+@dataclass(frozen=True)
+class GraphView:
+    run_id: str
+    revision: int
+    #: In topological order.
+    tasks: list[GraphTaskView]
+
+
+class _RefusingPrompter:
+    """Revisions never run workers or the gate, so nothing may ever be asked."""
+
+    async def ask_approval(self, action: Action) -> bool:
+        return False
+
+    async def confirm_merge(self, report: GateReport) -> bool:
+        return False
+
+
+def _latest_run_id() -> str:
+    runs = list_runs(limit=1)
+    if not runs:
+        raise AppError("belum ada run")
+    return runs[0].id
+
+
+def get_graph(run_id: str | None = None) -> GraphView:
+    """The run's current graph (latest run by default). Read-only: no writer lock."""
+    run_id = run_id or _latest_run_id()
+    _run_created(run_id)  # AppError if the run does not exist
+    store = _readonly_store()
+    if store is None:  # pragma: no cover - _run_created just read it
+        raise AppError(f"run tidak ditemukan: {run_id}")
+    try:
+        tasks = {task.id: task for task in store.list_tasks(run_id)}
+        revisions = [e for e in store.read_stream(f"graph:{run_id}") if e.type == "graph.revised"]
+    finally:
+        store.close()
+    nodes = [
+        GraphNode(id=t.id, blocked_by=tuple(t.spec.blocked_by), write_set=tuple(t.spec.write_set))
+        for t in tasks.values()
+    ]
+    views = [
+        GraphTaskView(
+            plan_id=plan_id(task_id, run_id),
+            state=tasks[task_id].state.value,
+            blocked_by=[plan_id(b, run_id) for b in tasks[task_id].spec.blocked_by],
+            write_set=list(tasks[task_id].spec.write_set),
+        )
+        for task_id in topological_order(nodes)
+    ]
+    revision = int(revisions[-1].payload["revision"]) if revisions else 0
+    return GraphView(run_id=run_id, revision=revision, tasks=views)
+
+
+def task_draft_from_file(path: Path) -> TaskDraft:
+    """A `TaskDraft` from a file with one `[[task]]` (`PlanError` lists every problem)."""
+    return TaskDraft.model_validate(load_task_file(path).model_dump())
+
+
+def revise_graph(run_id: str, ops: Sequence[GraphOp], expected_revision: int | None = None) -> int:
+    """Apply `ops` (plan ids) to a stopped run as one new graph revision; returns it.
+
+    Takes the writer lock like `run`/`resume`, so it fails with `WriterLockedError` while the
+    run is executing. Without `expected_revision` the current revision is read first.
+    """
+    created = _run_created(run_id)
+    options = created.get("options") or {}
+    orchestrator, _ = _assemble(
+        Path(created["repo_path"]),
+        [],  # no worker runs during a revision, so none (and no API key) is needed
+        list(options.get("check_command") or ["true"]),
+        _RefusingPrompter(),
+        auto_merge=False,
+    )
+    try:
+        expected = (
+            orchestrator.graph_revision(run_id) if expected_revision is None else expected_revision
+        )
+        return orchestrator.revise_graph(run_id, ops, expected)
+    finally:
+        orchestrator.close()
 
 
 def get_run_status(run_id: str | None = None) -> RunStatus | None:

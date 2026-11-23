@@ -102,6 +102,25 @@ Tinjau dan edit `plan.toml`, lalu jalankan dengan `caecilia run --plan`.
 - `--worker` menjadi default untuk task yang tidak menyebut `worker`; `--target` mengalahkan `target`
   di plan. `caecilia status` menampilkan kolom `BLOCKED_BY`.
 
+### Mengubah graf run yang berhenti
+
+Run yang berhenti (mis. `needs_human` atau budget habis) bisa diperbaiki tanpa membuat run baru.
+Setiap perubahan menjadi revisi graf baru yang divalidasi penuh; satu masalah saja membatalkan seluruh
+perubahan.
+
+```sh
+uv run caecilia graph show [--run ID]                          # urutan dependensi + revisi saat ini
+uv run caecilia graph add --run ID --file task.toml [--blocked-by a,b]   # file berisi satu [[task]]
+uv run caecilia graph deps --run ID TASK --blocked-by a,b      # "" = tanpa blocker; hanya task PENDING
+uv run caecilia graph cancel --run ID TASK                     # bukan task yang sedang dikerjakan/di-merge
+uv run caecilia graph retry --run ID TASK                      # NEEDS_HUMAN -> READY setelah Anda bereskan
+uv run caecilia resume --run ID
+```
+
+- Perintah yang mengubah graf ditolak selama run sedang dieksekusi; `graph show` tetap bisa dipakai.
+- Setiap perintah memakai revisi terbaru; `--expect-revision N` membuatnya gagal kalau graf sudah
+  berubah sejak Anda melihatnya.
+
 ### Worker native (model sungguhan)
 
 Provider pertama adalah DeepSeek, lewat API resminya dengan **API key** (ADR-0007). Harness tidak

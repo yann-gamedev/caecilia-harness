@@ -102,6 +102,31 @@ def parse_plan(text: str, source: str = "plan") -> Plan:
     return plan
 
 
+def load_task_file(path: Path) -> PlanTask:
+    """Read a file holding exactly one `[[task]]` in plan format (for `caecilia graph add`).
+
+    Only the task itself is checked here; how it fits the run's graph is checked by the
+    revision.
+    """
+    source = str(path)
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise PlanError([f"tidak bisa membaca file: {exc.strerror or exc}"], source) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise PlanError([f"TOML tidak valid: {exc}"], source) from exc
+    tasks = data.get("task")
+    extra = sorted(set(data) - {"task"})
+    if extra or not isinstance(tasks, list) or len(tasks) != 1:
+        problems = [f"field tidak dikenal: {', '.join(extra)}"] if extra else []
+        problems.append("file harus berisi tepat satu [[task]]")
+        raise PlanError(problems, source)
+    try:
+        return PlanTask.model_validate(tasks[0])
+    except ValidationError as exc:
+        raise PlanError([f"task.{p}" for p in _validation_problems(exc)], source) from exc
+
+
 def load_plan(path: Path) -> Plan:
     """Read and validate a `plan.toml` file."""
     try:

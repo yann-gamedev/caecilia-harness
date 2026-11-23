@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from typer.testing import CliRunner
 
-from caecilia_harness.bootstrap import artifact_info
+from caecilia_harness.bootstrap import artifact_info, get_run_status, list_runs
 from caecilia_harness.core.models import (
     Action,
     AddTask,
@@ -28,9 +29,11 @@ from caecilia_harness.core.orchestrator import (
 )
 from caecilia_harness.core.states import TaskState
 from caecilia_harness.gate.simple import SimpleGate
-from caecilia_harness.paths import db_path
+from caecilia_harness.interfaces.cli import app
+from caecilia_harness.paths import db_path, harness_home
 from caecilia_harness.store.db import open_db
 from caecilia_harness.store.events import SqliteEventStore
+from caecilia_harness.store.lock import WriterLock
 from caecilia_harness.store.projections import project_runs_and_tasks, rebuild_projections
 from caecilia_harness.workers.fake import FakeWorker
 from caecilia_harness.workspace.git_worktree import GitWorktreeBackend
@@ -287,14 +290,119 @@ async def test_rebuild_after_several_revisions_is_identical(
     orch.revise_graph("r1", [AddTask(task=_draft("c")), SetBlockers(task_id="b", blocked_by=[])], 2)
     orch.revise_graph("r1", [CancelTask(task_id="c")], 3)
 
-    conn = store.connection
-    tables = ("runs", "tasks", "task_deps")
-    before = {
-        t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY 1, 2")] for t in tables
-    }  # noqa: S608
-    rebuild_projections(conn)
-    after = {
-        t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY 1, 2")] for t in tables
-    }  # noqa: S608
-    assert after == before
+    before = _projection(store)
+    rebuild_projections(store.connection)
+    assert _projection(store) == before
     assert _revision(store)["revision"] == 4
+
+
+def _projection(store: SqliteEventStore) -> dict[str, list[tuple[Any, ...]]]:
+    dump: dict[str, list[tuple[Any, ...]]] = {}
+    for table in ("runs", "tasks", "task_deps"):
+        query = f"SELECT * FROM {table} ORDER BY 1, 2"  # noqa: S608 - fixed table names
+        dump[table] = [tuple(row) for row in store.connection.execute(query)]
+    return dump
+
+
+# --- CLI ---------------------------------------------------------------------------------------
+
+runner = CliRunner()
+
+
+def _cli_run(repo: Path, *extra: str) -> str:
+    """Run one fake task through the CLI and return the run id."""
+    check = f'"{sys.executable}" -c "print(1)"'
+    args = ["run", "catatan", "--repo", str(repo), "--check", check, "--worker", "fake", "--plain"]
+    runner.invoke(app, [*args, *extra])
+    [run] = list_runs()
+    return run.id
+
+
+def _task_file(tmp_path: Path, task: str = "docs") -> Path:
+    path = tmp_path / "task.toml"
+    path.write_text(
+        f'[[task]]\nid = "{task}"\ntitle = "Docs"\ninstructions = "tulis docs"\n'
+        f'write_set = ["{task}/**"]\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_cli_show_add_and_resume(git_repo: Path, tmp_path: Path) -> None:
+    run_id = _cli_run(git_repo, "--auto-merge")
+
+    shown = runner.invoke(app, ["graph", "show", "--plain"])
+    assert shown.exit_code == 0, shown.output
+    assert f"Run {run_id}  revisi graf 1" in shown.output
+    assert any(line.startswith("main ") and "DONE" in line for line in shown.output.splitlines())
+
+    added = runner.invoke(
+        app,
+        [
+            "graph",
+            "add",
+            "--run",
+            run_id,
+            "--file",
+            str(_task_file(tmp_path)),
+            "--blocked-by",
+            "main",
+        ],
+    )
+    assert added.exit_code == 0, added.output
+    assert "Revisi graf sekarang: 2" in added.output
+
+    shown = runner.invoke(app, ["graph", "show", "--run", run_id, "--plain"])
+    docs = next(line for line in shown.output.splitlines() if line.startswith("docs "))
+    assert "PENDING" in docs and " main " in docs and "docs/**" in docs
+
+    resumed = runner.invoke(app, ["resume", "--plain"])
+    assert resumed.exit_code == 0, resumed.output
+    assert git(git_repo, "show", "main:docs/caecilia_fake_docs.md") == "tulis docs"
+
+
+def test_cli_refusals_are_explained(git_repo: Path, tmp_path: Path) -> None:
+    run_id = _cli_run(git_repo, "--auto-merge")
+
+    deps = runner.invoke(app, ["graph", "deps", "--run", run_id, "main", "--blocked-by", ""])
+    assert deps.exit_code == 1
+    assert "DONE" in deps.output and "PENDING" in deps.output
+
+    stale = runner.invoke(
+        app, ["graph", "cancel", "--run", run_id, "main", "--expect-revision", "7"]
+    )
+    assert stale.exit_code == 1
+    assert "not 7" in stale.output
+
+    bad_file = tmp_path / "two.toml"
+    bad_file.write_text('[[task]]\nid = "a"\n[[task]]\nid = "b"\n', encoding="utf-8")
+    two = runner.invoke(app, ["graph", "add", "--run", run_id, "--file", str(bad_file)])
+    assert two.exit_code == 1 and "tepat satu [[task]]" in two.output
+
+
+def test_cli_cancel_and_retry_a_needs_human_task(git_repo: Path) -> None:
+    run_id = _cli_run(git_repo)  # no TTY, no --auto-merge: the merge is declined
+    assert get_run_status(run_id).tasks[0].state == "NEEDS_HUMAN"  # type: ignore[union-attr]
+
+    retried = runner.invoke(app, ["graph", "retry", "--run", run_id, "main"])
+    assert retried.exit_code == 0, retried.output
+    assert get_run_status(run_id).tasks[0].state == "READY"  # type: ignore[union-attr]
+
+    cancelled = runner.invoke(app, ["graph", "cancel", "--run", run_id, "main"])
+    assert cancelled.exit_code == 0, cancelled.output
+    assert "Revisi graf sekarang: 3" in cancelled.output
+    assert get_run_status(run_id).tasks[0].state == "CANCELLED"  # type: ignore[union-attr]
+
+
+def test_cli_writes_wait_for_a_running_run_but_show_does_not(
+    git_repo: Path, tmp_path: Path
+) -> None:
+    run_id = _cli_run(git_repo, "--auto-merge")
+    with WriterLock(harness_home() / "harness.lock"):  # as if `caecilia run` were executing
+        added = runner.invoke(
+            app, ["graph", "add", "--run", run_id, "--file", str(_task_file(tmp_path))]
+        )
+        shown = runner.invoke(app, ["graph", "show", "--run", run_id, "--plain"])
+    assert added.exit_code == 1
+    assert "sedang dieksekusi" in added.output
+    assert shown.exit_code == 0 and "revisi graf 1" in shown.output
