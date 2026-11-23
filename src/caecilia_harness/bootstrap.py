@@ -24,12 +24,16 @@ from caecilia_harness.gate.simple import SimpleGate
 from caecilia_harness.paths import db_path, harness_home
 from caecilia_harness.planning.plan import (
     Plan,
+    dump_plan,
     load_plan,
+    parse_plan,
     plan_id,
     plan_to_specs,
     run_budget,
     single_task_plan,
 )
+from caecilia_harness.planning.planner import Planner, PlanResult
+from caecilia_harness.planning.repo_summary import summarize_repo
 from caecilia_harness.providers.deepseek import DeepSeekProvider
 from caecilia_harness.providers.limited import LimitedProvider
 from caecilia_harness.security.approval import ApprovalPolicy, Approver, ExecRequest
@@ -434,6 +438,45 @@ async def prepare_run_from_plan(
         provider_slots,
         exec_slots,
     )
+
+
+def _exists(path: Path) -> bool:
+    return path.exists()
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+async def plan_goal(
+    goal: str,
+    repo_path: Path,
+    model: str,
+    out_path: Path,
+    max_tasks: int = 8,
+    force: bool = False,
+) -> PlanResult:
+    """Ask the model to plan `goal` and write the plan to `out_path` for the person to review.
+
+    Never starts a run, never takes the writer lock and never touches the database (ADR-0013).
+    The provider is built like the native worker's (decision D2, API key from `security.keys`).
+    """
+    if not goal.strip():
+        raise AppError("goal tidak boleh kosong")
+    if not model:
+        raise AppError("--model wajib diisi (nama model di provider)")
+    # Checked before calling the model, so a refusal costs nothing.
+    if _exists(out_path) and not force:
+        raise AppError(f"file sudah ada: {out_path} (pakai --force untuk menimpa)")
+    repo = await _repo_root(repo_path)
+    provider = LimitedProvider(make_provider(get_api_key(NATIVE_PROVIDER)), asyncio.Semaphore(1))
+    summary = await summarize_repo(repo)
+    result = await Planner(provider, model, max_tasks=max_tasks).propose(goal, summary)
+    text = dump_plan(result.plan)
+    parse_plan(text, str(out_path))  # what is written must load back (and pass `plan validate`)
+    _write_text(out_path, text)
+    return result
 
 
 async def resume_run(

@@ -3,20 +3,7 @@
 from __future__ import annotations
 
 from caecilia_harness.core.models import ContextPack, TaskSpec
-
-UNTRUSTED_OPEN = "<untrusted-data"
-UNTRUSTED_CLOSE = "</untrusted-data>"
-
-
-def wrap_untrusted(content: str, source: str, ok: bool | None = None) -> str:
-    """Wrap data from files, commands or documents so the model treats it as data only.
-
-    The closing marker is neutralised inside `content`, so the data cannot end the block early
-    and smuggle text that looks like it came from the harness.
-    """
-    safe = content.replace(UNTRUSTED_CLOSE, "</untrusted-data_>")
-    status = "" if ok is None else f' ok="{str(ok).lower()}"'
-    return f'{UNTRUSTED_OPEN} source="{source}"{status}>\n{safe}\n{UNTRUSTED_CLOSE}'
+from caecilia_harness.security.untrusted import UNTRUSTED_OPEN, wrap_untrusted
 
 
 def build_system_prompt(spec: TaskSpec) -> str:
