@@ -12,7 +12,10 @@ from caecilia_harness.planning.planner import PLAN_TOOL, Planner, PlannerError
 from caecilia_harness.providers.fake import FakeProvider
 
 GOAL = "tambah endpoint health dan halaman status"
-SUMMARY = '<untrusted-data source="repo-summary">\nTracked files (2):\napi/app.py\nweb/index.html\n</untrusted-data>'
+SUMMARY = (
+    '<untrusted-data source="repo-summary">\n'
+    "Tracked files (2):\napi/app.py\nweb/index.html\n</untrusted-data>"
+)
 
 
 def _task(task_id: str, *blocked_by: str, **extra: Any) -> dict[str, Any]:
