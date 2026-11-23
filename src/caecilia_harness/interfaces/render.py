@@ -12,7 +12,7 @@ import typer
 
 from caecilia_harness.bootstrap import RunStatus, RunSummary
 from caecilia_harness.core.models import Event
-from caecilia_harness.planning.plan import plan_id
+from caecilia_harness.planning.plan import Plan, plan_id
 
 _COLORS = {
     "run.": typer.colors.MAGENTA,
@@ -132,6 +132,20 @@ def format_status(status: RunStatus, plain: bool) -> list[str]:
     ]
     header = ["TASK", "STATE", "BLOCKED_BY", "ATTEMPTS", "WORKER", "RINGKASAN"]
     return lines + _table(header, rows, plain)
+
+
+def format_plan(plan: Plan, plain: bool) -> list[str]:
+    """Task table for a proposed plan: id, title, blockers and write set."""
+    rows = [
+        [
+            task.id,
+            task.title if len(task.title) <= 40 else task.title[:37] + "...",
+            ", ".join(task.blocked_by) or "-",
+            ", ".join(task.write_set) or "**",
+        ]
+        for task in plan.tasks
+    ]
+    return _table(["TASK", "JUDUL", "BLOCKED_BY", "WRITE_SET"], rows, plain)
 
 
 def format_runs(runs: Sequence[RunSummary], plain: bool) -> list[str]:

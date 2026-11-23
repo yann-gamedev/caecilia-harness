@@ -72,6 +72,17 @@ uv run caecilia plan validate plan.toml     # periksa offline; semua masalah dic
 uv run caecilia run --plan plan.toml --repo PATH --check "uv run pytest" --worker fake --auto-merge
 ```
 
+Plan juga bisa dibuatkan oleh model (butuh API key, lihat "Worker native"):
+
+```sh
+uv run caecilia plan "tambah endpoint health dan halaman status" --repo PATH --model <model> --out plan.toml
+```
+
+Planner hanya **menulis file**; ia tidak pernah menjalankan run. Ia hanya melihat daftar file yang
+dilacak git dan awal README (keduanya diperlakukan sebagai data, bukan instruksi), memvalidasi graf,
+dan meminta model memperbaiki plan sampai 3 ronde. File yang sudah ada tidak ditimpa tanpa `--force`.
+Tinjau dan edit `plan.toml`, lalu jalankan dengan `caecilia run --plan`.
+
 - `caecilia run` menerima **tepat satu** dari `GOAL` atau `--plan FILE`.
 - Task independen berjalan paralel jika write set-nya terbukti terpisah. Write set yang mungkin
   beririsan tetap serial; gate dan pertanyaan pengguna selalu satu per satu.

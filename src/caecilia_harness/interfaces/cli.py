@@ -15,9 +15,10 @@ import signal
 from collections.abc import Awaitable, Iterator
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
+from typer.core import TyperGroup
 
 from caecilia_harness import __version__
 from caecilia_harness.bootstrap import (
@@ -25,6 +26,7 @@ from caecilia_harness.bootstrap import (
     PreparedRun,
     get_run_status,
     list_runs,
+    plan_goal,
     prepare_run,
     prepare_run_from_plan,
     resume_run,
@@ -33,8 +35,14 @@ from caecilia_harness.core.graph import GraphError
 from caecilia_harness.core.orchestrator import OrchestratorError
 from caecilia_harness.interfaces.doctor import run_all
 from caecilia_harness.interfaces.prompter import TerminalPrompter
-from caecilia_harness.interfaces.render import format_event, format_runs, format_status
+from caecilia_harness.interfaces.render import (
+    format_event,
+    format_plan,
+    format_runs,
+    format_status,
+)
 from caecilia_harness.planning.plan import PlanError, load_plan
+from caecilia_harness.planning.planner import PlannerError
 from caecilia_harness.security import keys
 from caecilia_harness.store.lock import WriterLockedError
 
@@ -331,8 +339,57 @@ def runs(
         typer.echo(line)
 
 
-plan_app = typer.Typer(help="Periksa dan kelola file plan.toml.")
+class _PlanGroup(TyperGroup):
+    """`caecilia plan GOAL ...` and `caecilia plan validate FILE` in one group.
+
+    Click would read GOAL as a subcommand name, so anything that is not a known subcommand (or a
+    help flag) is routed to `create`.
+    """
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        if args and args[0] not in self.commands and args[0] not in ("--help", "-h"):
+            args = ["create", *args]
+        return super().parse_args(ctx, args)
+
+
+plan_app = typer.Typer(
+    cls=_PlanGroup,
+    no_args_is_help=True,
+    help="Buat plan.toml dengan model (`caecilia plan GOAL`), atau periksa plan yang ada.",
+)
 app.add_typer(plan_app, name="plan")
+
+
+@plan_app.command("create")
+def plan_create(
+    goal: Annotated[str, typer.Argument(help="Tujuan yang dipecah menjadi task.")],
+    repo: Annotated[Path, typer.Option("--repo", help="Repo Git yang direncanakan.")],
+    model: Annotated[str, typer.Option("--model", help="Nama model di provider.")],
+    out: Annotated[Path, typer.Option("--out", help="File plan yang ditulis.")] = Path("plan.toml"),
+    max_tasks: Annotated[
+        int, typer.Option("--max-tasks", min=1, help="Jumlah task paling banyak.")
+    ] = 8,
+    force: Annotated[bool, typer.Option("--force", help="Timpa file yang sudah ada.")] = False,
+    plain: PlainOpt = False,
+) -> None:
+    """Let the model split GOAL into a plan.toml. Nothing is run: review the file first."""
+    try:
+        result = asyncio.run(plan_goal(goal, repo, model, out, max_tasks=max_tasks, force=force))
+    except PlannerError as exc:
+        typer.echo(f"Error: {keys.redact(str(exc))}", err=True)
+        raise typer.Exit(code=1) from exc
+    except _USER_ERRORS as exc:
+        raise _fail(str(exc)) from exc
+    for line in format_plan(result.plan, plain):
+        typer.echo(line)
+    usage = result.usage
+    typer.echo("")
+    typer.echo(
+        f"Plan ditulis ke {out}: {len(result.plan.tasks)} task, {result.rounds} ronde, "
+        f"token in {usage.input_tokens} / out {usage.output_tokens}."
+    )
+    typer.echo(f"Tinjau dan edit {out} lebih dulu, lalu jalankan:")
+    typer.echo(f'  caecilia run --plan {out} --repo {repo} --check "<perintah cek>"')
 
 
 @plan_app.command("validate")
