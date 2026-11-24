@@ -125,7 +125,7 @@ Boleh dikerjakan sebelum M3 selesai; tidak bergantung pada konteks bersama.
 | CLI-01 | Perintah global `caecilia` + `.caecilia.toml` + `caecilia init` | [30](prompts/30-perintah-global.md) | M2-07 |
 | CLI-02 | Sesi interaktif mode baris (`caecilia`) + mode skrip (`caecilia -p`) | [31](prompts/31-sesi-interaktif.md) | CLI-01 |
 
-- [ ] CLI-01
+- [x] CLI-01
 - [ ] CLI-02
 
 ## M7 — Control API lokal dan Retro Dark TUI
@@ -218,3 +218,4 @@ Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, s
 - 2026-11-23 — BUG-01 dicatat: kegagalan sesekali di suite chaos paralel (2 dari ~7 putaran awal, lalu 37 putaran lulus); penyebab belum diketahui.
 - 2026-11-23 — M3 dipecah menjadi 6 task (prompt 24–29) dengan ADR-0014; prompt 23 (provider Gemini, opsional) dan keputusan D12 ditambahkan.
 - 2026-11-23 — ADR-0015: `caecilia` jadi perintah global dengan sesi interaktif dan mode `-p`; GUI desktop pasti dibangun. Prompt 30–35 ditambahkan (CLI-01/02, M7-01/02, M8-01/02); keputusan D13 dibuka.
+- 2026-11-24 — CLI-01 selesai: `caecilia` bisa dipasang global (`uv tool install --editable .`), repo default dari folder kerja, `.caecilia.toml` dengan prioritas CLI → config → default (field rahasia ditolak), `caecilia init`, `--version`/`-V`, cek doctor `path`/`config`/`api-key`; `status`/`resume` per repo; gate mengabaikan file untracked.
