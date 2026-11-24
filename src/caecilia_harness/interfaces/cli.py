@@ -8,9 +8,7 @@ names stay English.
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import signal
-from collections.abc import Awaitable, Iterator
+import json
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any
@@ -22,6 +20,7 @@ from caecilia_harness import __version__
 from caecilia_harness.bootstrap import (
     AppError,
     PreparedRun,
+    RunReport,
     get_graph,
     get_run_status,
     list_runs,
@@ -40,15 +39,16 @@ from caecilia_harness.core.orchestrator import (
     OrchestratorError,
 )
 from caecilia_harness.interfaces.doctor import run_all
-from caecilia_harness.interfaces.prompter import TerminalPrompter, stdin_is_tty
+from caecilia_harness.interfaces.live import drive as _drive
+from caecilia_harness.interfaces.prompter import LineReader, TerminalPrompter, stdin_is_tty
 from caecilia_harness.interfaces.render import (
-    format_event,
     format_graph,
     format_plan,
     format_runs,
     format_status,
 )
-from caecilia_harness.planning.plan import PlanError, load_plan
+from caecilia_harness.interfaces.repl import Repl, history_path
+from caecilia_harness.planning.plan import Plan, PlanError, load_plan
 from caecilia_harness.planning.planner import PlannerError
 from caecilia_harness.project_config import (
     CONFIG_NAME,
@@ -56,7 +56,10 @@ from caecilia_harness.project_config import (
     ConfigError,
     MissingOptionError,
     NotAGitRepoError,
+    OptionSource,
     ProjectConfig,
+    RunOptions,
+    option_sources,
     project_settings,
     repo_root,
     resolve_options,
@@ -67,17 +70,38 @@ from caecilia_harness.project_config import (
     parse_check as parse_check,  # re-exported: moved out of interfaces in CLI-01
 )
 from caecilia_harness.security import keys
+from caecilia_harness.session import AllowListPrompter, Session
 from caecilia_harness.store.lock import WriterLockedError
+
+
+class _RootGroup(TyperGroup):
+    """Lets `-p` / `--print` stand without a goal, as in `caecilia -p --plan plan.toml`.
+
+    Click would otherwise take the next option as the goal text.
+    """
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        fixed: list[str] = []
+        for index, arg in enumerate(args):
+            fixed.append(arg)
+            if arg in ("-p", "--print"):
+                following = args[index + 1] if index + 1 < len(args) else None
+                if following is None or following.startswith("-"):
+                    fixed.append("")
+        return super().parse_args(ctx, fixed)
+
 
 app = typer.Typer(
     name="caecilia",
-    help="Caecilia Harness: AI orchestration harness.",
-    no_args_is_help=True,
+    cls=_RootGroup,
+    help=(
+        "Caecilia Harness: AI orchestration harness. Tanpa argumen: sesi interaktif. "
+        '`caecilia -p "goal"`: mode skrip.'
+    ),
     add_completion=False,
 )
 
 _MARK = {"ok": "[ok]  ", "warn": "[warn]", "fail": "[FAIL]"}
-_POLL_S = 0.2
 _EXIT = {"done": 0, "needs_human": 2}
 _USER_ERRORS = (
     AppError,
@@ -87,6 +111,11 @@ _USER_ERRORS = (
     PlanError,
     GraphError,
 )
+
+
+class OutputFormat(StrEnum):
+    text = "text"
+    json = "json"
 
 
 class WorkerChoice(StrEnum):
@@ -136,89 +165,15 @@ def _runs_repo(repo: Path | None) -> Path | None:
         return None
 
 
-@contextlib.contextmanager
-def _ctrl_c(prepared: PreparedRun, running: asyncio.Task[str]) -> Iterator[None]:
-    """First Ctrl+C cancels workers softly; the second stops the whole run.
-
-    Stopping the run also works while a question is waiting for an answer: the scheduler then
-    cancels every worker itself. Windows uses plain SIGINT.
-    """
-    loop = asyncio.get_running_loop()
-    presses = 0
-    cancelling: set[asyncio.Task[None]] = set()  # keep references until the tasks finish
-
-    def on_sigint() -> None:
-        nonlocal presses
-        presses += 1
-        if presses == 1:
-            typer.echo("\nMembatalkan dengan halus... tekan Ctrl+C sekali lagi untuk paksa.")
-            task = loop.create_task(prepared.orchestrator.cancel_all("soft"))
-            cancelling.add(task)
-            task.add_done_callback(cancelling.discard)
-        else:
-            typer.echo("\nMembatalkan paksa.")
-            running.cancel()
-
-    try:
-        previous = signal.signal(
-            signal.SIGINT, lambda signum, frame: loop.call_soon_threadsafe(on_sigint)
-        )
-    except ValueError:  # not in the main thread: leave Ctrl+C alone
-        yield
-        return
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGINT, previous)
-
-
-async def _drive(start: Awaitable[PreparedRun], plain: bool) -> str:
-    prepared = await start
-    try:
-        typer.echo(f"Run {prepared.run_id} berjalan.")
-
-        def flush() -> None:
-            for event in prepared.new_events():
-                typer.echo(format_event(event, plain, run_id=prepared.run_id))
-
-        async def printer() -> None:
-            while True:
-                flush()
-                await asyncio.sleep(_POLL_S)
-
-        printing = asyncio.create_task(printer())
-        running = asyncio.create_task(prepared.execute())
-        try:
-            with _ctrl_c(prepared, running):
-                try:
-                    status = await running
-                except asyncio.CancelledError:
-                    current = asyncio.current_task()
-                    if current is not None and current.cancelling():
-                        raise  # caller cancellation must propagate, unlike second Ctrl+C
-                    typer.echo(
-                        f"Run {prepared.run_id} dihentikan. Lanjutkan dengan `caecilia resume`."
-                    )
-                    status = "cancelled"
-        finally:
-            printing.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await printing
-            flush()
-        typer.echo(f"Run {prepared.run_id} selesai: {status}")
-        return status
-    finally:
-        prepared.close()
-
-
 def _print_version(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -229,8 +184,235 @@ def main(
             help="Cetak versi harness lalu keluar.",
         ),
     ] = False,
+    print_goal: Annotated[
+        str | None,
+        typer.Option(
+            "-p",
+            "--print",
+            help='Mode skrip: plan -> run -> ringkasan, tanpa pertanyaan. `-p "goal"` atau '
+            "`-p --plan FILE`.",
+        ),
+    ] = None,
+    plan: Annotated[
+        Path | None,
+        typer.Option("--plan", help="Dengan -p: jalankan plan.toml yang ada tanpa planner."),
+    ] = None,
+    output_format: Annotated[
+        OutputFormat,
+        typer.Option("--output-format", help="Dengan -p: text, atau json (satu objek di akhir)."),
+    ] = OutputFormat.text,
+    quiet: Annotated[
+        bool, typer.Option("--quiet", help="Dengan -p: tanpa plan dan log event.")
+    ] = False,
+    allow_cmd: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--allow-cmd",
+            help='Dengan -p: prefix perintah yang disetujui, mis. "uv run pytest" (boleh '
+            "diulang; ditambah allow_commands di .caecilia.toml). Sisanya ditolak.",
+        ),
+    ] = None,
+    auto_merge: Annotated[
+        bool, typer.Option("--auto-merge", help="Merge tanpa konfirmasi kalau gate lulus.")
+    ] = False,
+    check: Annotated[
+        str | None, typer.Option("--check", help="Perintah gate (atau `check`).")
+    ] = None,
+    worker: Annotated[
+        WorkerChoice | None, typer.Option("--worker", help="fake atau native (atau `worker`).")
+    ] = None,
+    model: Annotated[
+        str | None, typer.Option("--model", help="Nama model di provider (atau `model`).")
+    ] = None,
+    target: Annotated[
+        str | None, typer.Option("--target", help="Branch target (default: branch aktif).")
+    ] = None,
+    max_parallel: Annotated[
+        int | None, typer.Option("--max-parallel", min=1, help="Task bersamaan (default 2).")
+    ] = None,
+    unsafe_no_sandbox: Annotated[
+        bool, typer.Option("--unsafe-no-sandbox", help="Izinkan exec tanpa sandbox (ADR-0008).")
+    ] = False,
+    repo: RepoOpt = None,
+    plain: PlainOpt = False,
 ) -> None:
-    """Caecilia Harness: AI orchestration harness."""
+    """Caecilia Harness: AI orchestration harness.
+
+    Without a command: the interactive session in the working folder's repo. With -p: plan,
+    run and summary without any question (scripts, CI). Options given before a command such as
+    `run` are not used by that command.
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+    cli = CliValues(
+        check=check,
+        worker=worker.value if worker is not None else None,
+        model=model,
+        max_parallel=max_parallel,
+        target=target,
+    )
+    if print_goal is None:
+        if plan is not None:
+            raise _fail("--plan di sini hanya untuk -p; di sesi interaktif pakai /run <file>")
+        _interactive(repo, cli, auto_merge, unsafe_no_sandbox, plain)
+        return
+    _print_mode(
+        print_goal or None,
+        plan,
+        repo,
+        cli,
+        output_format,
+        quiet,
+        allow_cmd or [],
+        auto_merge,
+        unsafe_no_sandbox,
+        plain,
+    )
+
+
+def _session_options(
+    repo: Path | None, cli: CliValues
+) -> tuple[Path, RunOptions, dict[str, OptionSource]]:
+    root, config = _project(repo)
+    try:
+        options = resolve_options(cli, config)
+    except ValueError as exc:
+        raise _fail(str(exc)) from exc
+    return root, options, dict(option_sources(cli, config))
+
+
+def _interactive(
+    repo: Path | None, cli: CliValues, auto_merge: bool, unsafe_no_sandbox: bool, plain: bool
+) -> None:
+    root, options, sources = _session_options(repo, cli)
+    reader = LineReader()
+    prompter = TerminalPrompter(reader=reader, echo=typer.echo)
+    session = Session(
+        root,
+        options,
+        prompter,
+        sources,
+        auto_merge=auto_merge,
+        unsafe_no_sandbox=unsafe_no_sandbox,
+    )
+    repl = Repl(session, reader, typer.echo, plain=plain, history=history_path())
+    asyncio.run(repl.run())
+
+
+def _print_mode(
+    goal: str | None,
+    plan_path: Path | None,
+    repo: Path | None,
+    cli: CliValues,
+    output_format: OutputFormat,
+    quiet: bool,
+    allow_cmd: list[str],
+    auto_merge: bool,
+    unsafe_no_sandbox: bool,
+    plain: bool,
+) -> None:
+    """`caecilia -p`: never asks, never waits for input; exit code as for `run`."""
+    as_json = output_format is OutputFormat.json
+
+    def fail(message: str) -> typer.Exit:
+        if as_json:
+            typer.echo(
+                json.dumps({"status": "error", "exit_code": 1, "error": keys.redact(message)})
+            )
+            return typer.Exit(code=1)
+        return _fail(message)
+
+    if (goal is None) == (plan_path is None):
+        raise fail('sebutkan tepat satu: -p "goal" atau -p --plan FILE')
+    try:
+        root, config = project_settings(Path.cwd(), repo)
+        options = resolve_options(cli, config)
+        allow = [*options.allow_commands, *(parse_check(cmd) for cmd in allow_cmd)]
+    except ValueError as exc:  # NotAGitRepoError, ConfigError, unknown worker, bad quoting
+        raise fail(str(exc)) from exc
+    prompter = AllowListPrompter(allow)
+    session = Session(
+        root,
+        options,
+        prompter,
+        dict(option_sources(cli, config)),
+        auto_merge=auto_merge,
+        unsafe_no_sandbox=unsafe_no_sandbox,
+    )
+    talk = not as_json and not quiet
+
+    def echo(text: str) -> None:
+        if talk:
+            typer.echo(text)
+
+    run_ids: list[str] = []
+
+    async def start(chosen: Plan) -> PreparedRun:
+        prepared = await session.start(chosen)
+        run_ids.append(prepared.run_id)
+        return prepared
+
+    async def flow() -> str:
+        chosen = (
+            session.load(plan_path) if plan_path is not None else await session.propose(goal or "")
+        )
+        if talk:
+            for line in format_plan(chosen, plain):
+                typer.echo(line)
+            typer.echo("")
+        return await _drive(start(chosen), plain, echo)
+
+    try:
+        status = asyncio.run(flow())
+    except PlanError as exc:
+        raise fail(f"plan tidak valid: {'; '.join(exc.problems)}") from exc
+    except (*_USER_ERRORS, PlannerError, ValueError) as exc:
+        raise fail(str(exc)) from exc
+    code = exit_code_for(status)
+    report = session.report(run_ids[0])
+    usage = session.last_plan_usage
+    if as_json:
+        typer.echo(json.dumps(_report_json(report, code, usage.input_tokens, usage.output_tokens)))
+    else:
+        for line in _report_text(report, usage.input_tokens, usage.output_tokens):
+            typer.echo(line)
+    raise typer.Exit(code=code)
+
+
+def _report_json(report: RunReport, code: int, plan_in: int, plan_out: int) -> dict[str, Any]:
+    return {
+        "run_id": report.run_id,
+        "goal": report.goal,
+        "status": report.status,
+        "exit_code": code,
+        "tasks": [
+            {
+                "id": task.plan_id,
+                "state": task.state,
+                "attempts": task.attempts,
+                "merged_commit": task.merged_commit,
+            }
+            for task in report.tasks
+        ],
+        "tokens": {"input": report.input_tokens, "output": report.output_tokens},
+        "planner_tokens": {"input": plan_in, "output": plan_out},
+        "refused_commands": report.refused_commands,
+    }
+
+
+def _report_text(report: RunReport, plan_in: int, plan_out: int) -> list[str]:
+    lines = ["", f"Ringkasan run {report.run_id}: {report.status}"]
+    for task in report.tasks:
+        commit = f"merge {task.merged_commit[:8]}" if task.merged_commit else "tidak di-merge"
+        lines.append(f"  {task.plan_id:<16} {task.state:<12} attempt {task.attempts}  {commit}")
+    lines.append(
+        f"Token worker: in {report.input_tokens} / out {report.output_tokens}; "
+        f"planner: in {plan_in} / out {plan_out}"
+    )
+    if report.refused_commands:
+        lines.append("Perintah ditolak (tidak ada di --allow-cmd / allow_commands):")
+        lines.extend(f"  - {' '.join(argv)}" for argv in report.refused_commands)
+    return lines
 
 
 @app.command()

@@ -452,7 +452,37 @@ async def prepare_run_from_plan(
     `worker_kind` is the default for tasks that do not name a worker; `target` overrides the
     plan's target. Every worker the tasks refer to is built (e.g. fake and native together).
     """
-    plan = load_plan(plan_path)
+    return await prepare_plan_run(
+        load_plan(plan_path),
+        repo_path,
+        check_command,
+        prompter,
+        worker_kind,
+        target,
+        auto_merge,
+        unsafe_no_sandbox,
+        model,
+        max_parallel,
+        provider_slots,
+        exec_slots,
+    )
+
+
+async def prepare_plan_run(
+    plan: Plan,
+    repo_path: Path,
+    check_command: list[str],
+    prompter: UserPrompter,
+    worker_kind: WorkerKind = "native",
+    target: str | None = None,
+    auto_merge: bool = False,
+    unsafe_no_sandbox: bool = False,
+    model: str | None = None,
+    max_parallel: int | None = None,
+    provider_slots: int = 2,
+    exec_slots: int = 2,
+) -> PreparedRun:
+    """Create a run from a `Plan` already in memory (the interactive session's proposed plan)."""
     return await _prepare(
         plan,
         repo_path,
@@ -498,14 +528,89 @@ async def plan_goal(
     # Checked before calling the model, so a refusal costs nothing.
     if _exists(out_path) and not force:
         raise AppError(f"file sudah ada: {out_path} (pakai --force untuk menimpa)")
-    repo = await _repo_root(repo_path)
-    provider = LimitedProvider(make_provider(get_api_key(NATIVE_PROVIDER)), asyncio.Semaphore(1))
-    summary = await summarize_repo(repo)
-    result = await Planner(provider, model, max_tasks=max_tasks).propose(goal, summary)
+    result = await propose_plan(goal, repo_path, model, max_tasks=max_tasks)
     text = dump_plan(result.plan)
     parse_plan(text, str(out_path))  # what is written must load back (and pass `plan validate`)
     _write_text(out_path, text)
     return result
+
+
+async def propose_plan(goal: str, repo_path: Path, model: str, max_tasks: int = 8) -> PlanResult:
+    """Ask the model to plan `goal`; nothing is written, locked or run (ADR-0013)."""
+    if not goal.strip():
+        raise AppError("goal tidak boleh kosong")
+    if not model:
+        raise AppError("--model wajib diisi (nama model di provider)")
+    repo = await _repo_root(repo_path)
+    provider = LimitedProvider(make_provider(get_api_key(NATIVE_PROVIDER)), asyncio.Semaphore(1))
+    summary = await summarize_repo(repo)
+    return await Planner(provider, model, max_tasks=max_tasks).propose(goal, summary)
+
+
+@dataclass(frozen=True)
+class TaskOutcome:
+    plan_id: str
+    state: str
+    attempts: int
+    #: Commit the task was merged as, if it was merged.
+    merged_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class RunReport:
+    """What a finished (or stopped) run did, for summaries and `caecilia -p` JSON."""
+
+    run_id: str
+    goal: str
+    status: str
+    tasks: list[TaskOutcome]
+    input_tokens: int
+    output_tokens: int
+    #: argv of every exec request that was refused.
+    refused_commands: list[list[str]]
+
+
+def run_report(run_id: str) -> RunReport:
+    """Per-task state and merge commit, token totals and refused commands of a run."""
+    status = get_run_status(run_id)
+    if status is None:  # pragma: no cover - get_run_status raises for an unknown id
+        raise AppError(f"run tidak ditemukan: {run_id}")
+    store = _readonly_store()
+    if store is None:  # pragma: no cover - get_run_status just read it
+        raise AppError(f"run tidak ditemukan: {run_id}")
+    tokens_in = tokens_out = 0
+    refused: list[list[str]] = []
+    outcomes: list[TaskOutcome] = []
+    try:
+        for task in status.tasks:
+            merged: str | None = None
+            requested: dict[str, list[str]] = {}
+            events = store.read_stream(f"task:{task.id}") + store.read_stream(f"approval:{task.id}")
+            for event in events:
+                p = event.payload
+                if event.type == "usage.recorded":
+                    tokens_in += int(p.get("input_tokens", 0))
+                    tokens_out += int(p.get("output_tokens", 0))
+                elif event.type == "gate.passed":
+                    report = p.get("report") or {}
+                    merged = report.get("merged_commit") or p.get("merged_commit") or merged
+                elif event.type == "approval.requested":
+                    detail = (p.get("action") or {}).get("detail") or {}
+                    requested[event.event_id] = [str(arg) for arg in detail.get("argv") or []]
+                elif event.type == "approval.decided" and not p.get("allowed"):
+                    refused.append(requested.get(event.causation_id or "", []))
+            outcomes.append(TaskOutcome(task.plan_id, task.state, task.attempts, merged))
+    finally:
+        store.close()
+    return RunReport(
+        run_id=run_id,
+        goal=status.run.goal,
+        status=status.run.status,
+        tasks=outcomes,
+        input_tokens=tokens_in,
+        output_tokens=tokens_out,
+        refused_commands=refused,
+    )
 
 
 async def resume_run(

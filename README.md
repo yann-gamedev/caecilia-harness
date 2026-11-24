@@ -4,8 +4,10 @@ AI orchestration harness: dekomposisi task yang sadar dependensi, sesi worker pa
 terisolasi, konteks bersama dengan revisi eksplisit, dan integration gate sebelum perubahan apa pun
 masuk ke branch utama.
 
-Status: **M1 selesai**. Satu task bisa dijalankan end-to-end, dengan worker palsu (`--worker fake`)
-atau dengan model sungguhan lewat API DeepSeek (`--worker native`). Lihat `docs/backlog.md`.
+Status: **M1 selesai, M2 berjalan**. Run satu task atau plan multi-task paralel bisa dijalankan
+end-to-end, dengan worker palsu (`--worker fake`) atau dengan model sungguhan lewat API DeepSeek
+(`--worker native`), dari sesi interaktif `caecilia`, mode skrip `caecilia -p`, atau subcommand.
+Lihat `docs/backlog.md`.
 
 ## Mulai cepat (pengembangan)
 
@@ -69,6 +71,64 @@ caecilia run "tambahkan endpoint health"
   merge ke branch yang sedang di-checkout.
 - `caecilia status` dan `caecilia resume` memakai run milik repo di folder kerja; di luar repo Git,
   semua run ditampilkan.
+
+## Sesi interaktif (`caecilia`)
+
+Ketik `caecilia` tanpa argumen di folder proyek. Banner menampilkan versi, repo, worker/provider/model,
+ada-tidaknya API key (isinya tidak pernah ditampilkan), dan run yang belum selesai.
+
+```text
+caecilia> tambahkan endpoint health dan halaman status
+TASK  JUDUL      BLOCKED_BY  WRITE_SET
+api   Endpoint   -           api/**
+web   Halaman    api         web/**
+Plan: 2 task, 1 dependensi, token planner in 1200 / out 300.
+Jalankan? [y]a / [e]dit / [n]o: y
+```
+
+- Teks biasa = goal: planner membuat plan (dengan worker `fake`, plan satu task tanpa model). `e`
+  membuka plan di editor (`$VISUAL`/`$EDITOR`, atau `notepad` di Windows), lalu memvalidasinya ulang;
+  plan yang rusak tidak dijalankan. `n` menyimpan plan di sesi saja.
+- Selama run: log event per baris, pertanyaan approval tampil di tempat yang sama. Ctrl+C sekali
+  membatalkan worker dengan halus, dua kali menghentikan run, lalu kembali ke prompt. Ctrl+C saat
+  menunggu input membatalkan baris; Ctrl+D (Ctrl+Z lalu Enter di Windows) atau `/exit` keluar.
+- Opsi `--check`, `--worker`, `--model`, `--target`, `--max-parallel`, `--auto-merge`, `--repo`
+  berlaku untuk seluruh sesi: `caecilia --worker fake --check "python -m pytest"`.
+- Goal dan command disimpan di `CAECILIA_HOME/history` (jawaban pertanyaan tidak). Plan hanya ditulis
+  ke file lewat `/save`.
+
+| Command | Arti |
+| --- | --- |
+| `/help` | daftar command |
+| `/plan <goal>` | hanya buat plan, tidak menjalankan |
+| `/run [file]` | jalankan plan terakhir atau file plan |
+| `/status`, `/runs`, `/graph` | sama dengan subcommand |
+| `/resume [id]` | lanjutkan run |
+| `/save <file>` | simpan plan terakhir |
+| `/config` | opsi efektif dan asalnya (`cli` / `config` / `default`) |
+| `/exit` | keluar |
+
+## Mode skrip (`caecilia -p`)
+
+Untuk skrip dan CI: plan → run → ringkasan, tanpa pertanyaan apa pun dan tanpa menunggu input.
+
+```sh
+caecilia -p "tambah tes untuk modul X" --auto-merge
+caecilia -p --plan plan.toml --auto-merge --output-format json
+caecilia -p "rapikan README" --allow-cmd "uv run pytest" --allow-cmd "git status" --quiet
+```
+
+- Exit code sama dengan `caecilia run`: `0` DONE, `2` NEEDS_HUMAN (termasuk gate lulus tetapi tidak
+  di-merge), `1` gagal/dibatalkan/error.
+- Merge hanya terjadi dengan `--auto-merge`.
+- Perintah yang ingin dijalankan worker disetujui hanya kalau argv-nya diawali salah satu prefix
+  `--allow-cmd` (boleh diulang) atau `allow_commands` di `.caecilia.toml`; sisanya ditolak, dicatat
+  sebagai event, dan dicantumkan di ringkasan.
+- Plan dicetak sebelum run kecuali `--quiet` (yang juga menyembunyikan log event). `--plan FILE`
+  menjalankan plan yang ada tanpa planner.
+- `--output-format json` mencetak satu objek JSON di akhir: `run_id`, `goal`, `status`, `exit_code`,
+  `tasks` (`id`, `state`, `attempts`, `merged_commit`), `tokens`, `planner_tokens`,
+  `refused_commands`. Error sebelum run menjadi `{"status": "error", "exit_code": 1, "error": ...}`.
 
 ## Pemakaian CLI
 

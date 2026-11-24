@@ -106,6 +106,8 @@ source_modules = [
     "caecilia_harness.bootstrap",
     "caecilia_harness.artifacts",
     "caecilia_harness.planning",
+    "caecilia_harness.project_config",
+    "caecilia_harness.session",
 ]
 forbidden_modules = ["caecilia_harness.interfaces"]
 

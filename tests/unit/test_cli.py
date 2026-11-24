@@ -17,7 +17,9 @@ from typer.testing import CliRunner
 
 from caecilia_harness.bootstrap import AppError, PreparedRun
 from caecilia_harness.core.models import Action, Actor, Event, GateReport
-from caecilia_harness.interfaces.cli import _ctrl_c, _drive, app, exit_code_for, parse_check
+from caecilia_harness.interfaces.cli import app, exit_code_for, parse_check
+from caecilia_harness.interfaces.live import ctrl_c as _ctrl_c
+from caecilia_harness.interfaces.live import drive as _drive
 from caecilia_harness.interfaces.prompter import TerminalPrompter
 from caecilia_harness.interfaces.render import format_event
 from caecilia_harness.security.approval import ApprovalPolicy

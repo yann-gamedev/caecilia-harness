@@ -20,3 +20,7 @@ Satu file per keputusan. Nilai status: `Proposed` (jangan diimplementasikan), `D
 | [0013](0013-rencana-run-dan-penjadwalan-paralel.md) | Rencana run dan penjadwalan paralel | Diterima |
 | [0014](0014-konteks-bersama.md) | Konteks bersama: dokumen berversi, pin, dan invalidasi | Diterima |
 | [0015](0015-perintah-global-dan-gui.md) | `caecilia` sebagai perintah global, sesi interaktif, dan GUI yang pasti dibangun | Diterima |
+| 0016 | _(dipesan prompt 32: transport control API)_ | — |
+| 0017 | _(dipesan prompt 34: teknologi GUI)_ | — |
+| [0018](0018-worker-agent-cli-resmi.md) | Worker dari agent CLI resmi, termasuk dengan langganan pengguna | Diterima |
+| [0019](0019-efisiensi-token.md) | Efisiensi token: koordinasi di kode, peran model, konteks sempit | Diterima |

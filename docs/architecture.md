@@ -23,7 +23,7 @@ berversi, dan worktree; hasilnya diverifikasi ulang oleh integration gate sebelu
 | `core` | model, port (Protocol), tabel state task, orchestrator, scheduler, policy | M1–M2 |
 | `store` | skema SQLite, migrasi, append event, proyeksi, outbox, lease | M1 |
 | `providers` | adapter model + registry kapabilitas; `fake` untuk tes | M1 |
-| `workers` | implementasi `WorkerAdapter`: `native`, `fake`, lalu agent eksternal | M1, M5 |
+| `workers` | implementasi `WorkerAdapter`: `native`, `fake`, agent eksternal (`workers/external`), dispatch preamble | M1, EXT |
 | `workspace` | lifecycle git worktree, diff, exec runner ber-sandbox | M1 |
 | `gate` | merge queue, rebase, pengecekan, contract diff | M1 (sederhana), M4 |
 | `context` | context pack builder, pin, invalidasi | M3 |
@@ -226,6 +226,34 @@ Laporan memuat `checks.write_set=false`, pola yang berlaku, dan semua file pelan
 Daftar file diff memakai `--no-renames` agar pemindahan memeriksa sumber yang dihapus dan tujuan yang ditulis.
 Perluasan cakupan prompt 18 ke `workspace/git_worktree.py` disetujui pemilik pada 2026-11-19.
 
+## Worker agent eksternal dan efisiensi token (ADR-0018, ADR-0019)
+
+Harness punya dua jenis worker dengan kontrak `WorkerAdapter` yang sama:
+
+| Worker | Siapa menjalankan tool loop | Akses model | Status |
+| --- | --- | --- | --- |
+| `native` | Caecilia (`workers/native`) | API key lewat provider (DeepSeek; Gemini di prompt 23) | M1 |
+| `claude-code` | Claude Code resmi, headless | login milik Claude Code: langganan atau API key | EXT-02 |
+| `codex`, `gemini-cli` | Codex CLI / Gemini CLI resmi, headless | login milik agent itu; langganan menunggu D14 | EXT-03 |
+
+```
+plan (planner, model kuat, sekali)
+  └─ scheduler deterministik (tanpa token)
+       └─ per task: worktree → preamble + konteks sempit → worker (native / agent CLI)
+            └─ laporan ≤ 3 kalimat → diff dihitung harness → gate (check command) → merge
+                 └─ question/blocked → NEEDS_HUMAN → caecilia answer → lanjut sesi yang sama
+```
+
+Aturan tetap:
+
+- Harness tidak membaca, menyalin, atau menyimpan kredensial agent, dan tidak menjalankan login atas nama
+  pengguna. Untuk `auth = "subscription"`, API key vendor dihapus dari env agent.
+- Agent berjalan di worktree task dengan izin non-interaktif yang tidak melewati semua izin. Shell hanya
+  untuk `allow_commands`; check command dijalankan gate, bukan dipercaya dari agent.
+- Diff selalu dihitung harness dari worktree dan dicek terhadap write set.
+- Koordinasi (jadwal, retry, gate, recovery) di kode. LLM dipakai untuk plan, task, dan (opsional) review.
+- Agent luar boleh menjadi koordinator lewat `caecilia --json` dan `caecilia wait` (EXT-06), tanpa polling.
+
 ## Konteks bersama (M3, ADR-0014)
 
 | Bagian | Bentuk |
@@ -275,7 +303,7 @@ Semua logika yang dibutuhkan lebih dari satu frontend berada di luar `interfaces
 ```toml
 version = 1
 check = "python -m pytest"        # perintah gate
-worker = "native"                 # fake | native
+worker = "native"                 # fake | native | claude-code | codex | gemini-cli (EXT)
 provider = "deepseek"
 model = "<nama model>"
 max_parallel = 2

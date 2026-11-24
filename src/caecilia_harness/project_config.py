@@ -245,6 +245,33 @@ def resolve_options(cli: CliValues, config: ProjectConfig | None) -> RunOptions:
     )
 
 
+OptionSource = Literal["cli", "config", "default"]
+
+
+def option_sources(cli: CliValues, config: ProjectConfig | None) -> dict[str, OptionSource]:
+    """Where each resolved option came from (shown by `/config` in the interactive session)."""
+    cfg = config or ProjectConfig()
+    sources: dict[str, OptionSource] = {}
+    for name in (
+        "check",
+        "worker",
+        "provider",
+        "model",
+        "max_parallel",
+        "provider_slots",
+        "exec_slots",
+        "target",
+    ):
+        if getattr(cli, name) is not None:
+            sources[name] = "cli"
+        elif getattr(cfg, name) is not None:
+            sources[name] = "config"
+        else:
+            sources[name] = "default"
+    sources["allow_commands"] = "config" if cfg.allow_commands else "default"
+    return sources
+
+
 class ConfigExistsError(ValueError):
     """`.caecilia.toml` is already there and overwriting was not asked for."""
 
