@@ -20,7 +20,12 @@ from tests.conftest import MemoryKeyring
 CANARY = "sk-test-CANARY"
 
 #: Every provider whose key the harness reads, with the environment variable for it.
-PROVIDERS = [("deepseek", "DEEPSEEK_API_KEY"), ("gemini", "GEMINI_API_KEY")]
+PROVIDERS = [
+    ("deepseek", "DEEPSEEK_API_KEY"),
+    ("gemini", "GEMINI_API_KEY"),
+    ("anthropic", "ANTHROPIC_API_KEY"),
+    ("openai", "OPENAI_API_KEY"),
+]
 
 
 def test_known_providers() -> None:
