@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from caecilia_harness import artifacts
 from caecilia_harness.core.graph import GraphNode, topological_order
@@ -44,14 +44,18 @@ from caecilia_harness.planning.plan import (
 )
 from caecilia_harness.planning.planner import Planner, PlanResult
 from caecilia_harness.planning.repo_summary import summarize_repo
+from caecilia_harness.project_config import AGENT_NAMES, AgentConfig, WorkerName
 from caecilia_harness.providers.deepseek import DeepSeekProvider
 from caecilia_harness.providers.limited import LimitedProvider
 from caecilia_harness.security.approval import ApprovalPolicy, Approver, ExecRequest
+from caecilia_harness.security.env import AGENT_PROVIDERS, agent_env
 from caecilia_harness.security.keys import get_api_key
 from caecilia_harness.store.db import open_db, open_readonly
 from caecilia_harness.store.events import SqliteEventStore
 from caecilia_harness.store.lock import WriterLock
 from caecilia_harness.store.projections import project_runs_and_tasks
+from caecilia_harness.workers.external.base import ExternalAgentWorker
+from caecilia_harness.workers.external.profile import detect_agent, profile_for
 from caecilia_harness.workers.fake import FakeWorker
 from caecilia_harness.workers.native.worker import NativeWorker
 from caecilia_harness.workspace.exec_runner import ExecRunner
@@ -59,8 +63,8 @@ from caecilia_harness.workspace.git import GitError, run_git
 from caecilia_harness.workspace.git_worktree import GitWorktreeBackend
 from caecilia_harness.workspace.sandbox import detect_sandbox
 
-WorkerKind = Literal["fake", "native"]
-WORKER_KINDS: tuple[str, ...] = ("fake", "native")
+WorkerKind = WorkerName
+WORKER_KINDS: tuple[str, ...] = ("fake", "native", *AGENT_NAMES)
 #: Decision D2 (docs/decisions-open.md): the first provider for the native worker.
 NATIVE_PROVIDER = "deepseek"
 
@@ -152,6 +156,74 @@ def _native_worker(
     return NativeWorker(provider, model, runner_for)
 
 
+def _external_worker(
+    name: str, agent: AgentConfig | None, model: str | None
+) -> ExternalAgentWorker:
+    """Build the worker for one agent profile, with its config overrides (EXT-01).
+
+    Fails before any lock or DB is touched when the program is missing, too old, or needs an
+    API key that is not stored (like the native worker's missing-key check).
+    """
+    if name != "fake-agent":
+        raise AppError(f"adapter {name} belum tersedia; gunakan fake-agent (prompt 37-38)")
+    config = agent or AgentConfig()
+    profile = profile_for(
+        name,
+        auth=config.auth,
+        model=config.model or model,
+        extra_args=tuple(config.extra_args),
+    )
+    detection = detect_agent(profile)
+    if not detection.found:
+        raise AppError(
+            f"{name}: program {profile.binary!r} tidak ditemukan di PATH "
+            f"(pasang agent resminya; terms: {profile.terms_url or '-'})"
+        )
+    if detection.version is None:
+        raise AppError(
+            f"{name}: {profile.binary} ada di {detection.path} tetapi versinya tidak terbaca "
+            f"(butuh >= {profile.min_version})"
+        )
+    if not detection.compatible:
+        raise AppError(
+            f"{name}: versi {detection.version} terlalu lama (butuh >= {profile.min_version})"
+        )
+    key: str | None = None
+    if profile.auth == "api-key":
+        provider = AGENT_PROVIDERS.get(name)
+        if provider is None:
+            raise AppError(f"{name}: tidak mendukung auth = api-key")
+        key = get_api_key(provider)
+    env = agent_env(profile, os.environ, key)
+    return ExternalAgentWorker(profile, env=env, secrets=(key,) if key else ())
+
+
+def make_worker(
+    kind: str,
+    *,
+    agents: Mapping[str, AgentConfig] | None = None,
+    model: str | None = None,
+    unsafe_no_sandbox: bool = False,
+    orchestrator_ref: list[Orchestrator] | None = None,
+    provider_slots: asyncio.Semaphore | None = None,
+    exec_slots: asyncio.Semaphore | None = None,
+) -> WorkerAdapter:
+    """Build the `WorkerAdapter` for `kind` (`fake`, `native`, or an external agent)."""
+    if kind == "fake":
+        return _fake_worker()
+    if kind == "native":
+        return _native_worker(
+            model,
+            unsafe_no_sandbox,
+            orchestrator_ref if orchestrator_ref is not None else [],
+            provider_slots if provider_slots is not None else asyncio.Semaphore(2),
+            exec_slots if exec_slots is not None else asyncio.Semaphore(2),
+        )
+    if kind in AGENT_NAMES:
+        return _external_worker(kind, (agents or {}).get(kind), model)
+    raise AppError(f"worker tidak dikenal: {kind!r} (tersedia: {', '.join(WORKER_KINDS)})")
+
+
 def _assemble(
     repo_path: Path,
     worker_kinds: Collection[str],
@@ -162,6 +234,7 @@ def _assemble(
     unsafe_no_sandbox: bool = False,
     provider_slots: int = 2,
     exec_slots: int = 2,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> tuple[Orchestrator, SqliteEventStore]:
     """Build every worker the run's tasks refer to, then lock, open the DB and wire it up."""
     for name, limit in (("provider_slots", provider_slots), ("exec_slots", exec_slots)):
@@ -173,15 +246,19 @@ def _assemble(
             f"worker tidak dikenal: {', '.join(unknown)} (tersedia: {', '.join(WORKER_KINDS)})"
         )
     orchestrator_ref: list[Orchestrator] = []
+    provider_sem = asyncio.Semaphore(provider_slots)
+    exec_sem = asyncio.Semaphore(exec_slots)
     workers: dict[str, WorkerAdapter] = {"fake": _fake_worker()}
-    if "native" in worker_kinds:
-        # Fails here, before any lock or DB is touched, if the key or model is missing.
-        workers["native"] = _native_worker(
-            model,
-            unsafe_no_sandbox,
-            orchestrator_ref,
-            asyncio.Semaphore(provider_slots),
-            asyncio.Semaphore(exec_slots),
+    for kind in sorted(set(worker_kinds) - {"fake"}):
+        # Fails here, before any lock or DB is touched, if a key, model or binary is missing.
+        workers[kind] = make_worker(
+            kind,
+            agents=agents,
+            model=model,
+            unsafe_no_sandbox=unsafe_no_sandbox,
+            orchestrator_ref=orchestrator_ref,
+            provider_slots=provider_sem,
+            exec_slots=exec_sem,
         )
     lock = WriterLock(harness_home() / "harness.lock")
     lock.acquire()
@@ -224,11 +301,13 @@ def build_orchestrator(
     model: str | None = None,
     provider_slots: int = 2,
     exec_slots: int = 2,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> Orchestrator:
     """Assemble store, workspace backend, gate and worker. Call `close()` on the result.
 
     Takes the single-writer lock first: a second orchestrator fails with `WriterLockedError`.
     `worker_kind="native"` needs `model` and a stored API key (`MissingApiKeyError` otherwise);
+    an external agent needs its program on PATH and, with `auth = "api-key"`, its key.
     `unsafe_no_sandbox` only affects the native worker's exec runner.
     """
     return _assemble(
@@ -241,6 +320,7 @@ def build_orchestrator(
         unsafe_no_sandbox,
         provider_slots=provider_slots,
         exec_slots=exec_slots,
+        agents=agents,
     )[0]
 
 
@@ -341,6 +421,7 @@ async def _prepare(
     max_parallel: int | None,
     provider_slots: int,
     exec_slots: int,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> PreparedRun:
     if max_parallel is not None:
         if max_parallel < 1:
@@ -364,6 +445,7 @@ async def _prepare(
         unsafe_no_sandbox,
         provider_slots=provider_slots,
         exec_slots=exec_slots,
+        agents=agents,
     )
     try:
         await orchestrator.recover()
@@ -377,6 +459,7 @@ async def _prepare(
             "max_parallel": plan.max_parallel,
             "provider_slots": provider_slots,
             "exec_slots": exec_slots,
+            "agents": {name: cfg.model_dump() for name, cfg in (agents or {}).items()},
         }
         orchestrator.create_run(
             plan.goal,
@@ -408,6 +491,7 @@ async def prepare_run(
     max_parallel: int | None = None,
     provider_slots: int = 2,
     exec_slots: int = 2,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> PreparedRun:
     """Create a run with one task for `goal` (a one-task plan, see `single_task_plan`).
 
@@ -430,6 +514,7 @@ async def prepare_run(
         max_parallel,
         provider_slots,
         exec_slots,
+        agents,
     )
 
 
@@ -446,6 +531,7 @@ async def prepare_run_from_plan(
     max_parallel: int | None = None,
     provider_slots: int = 2,
     exec_slots: int = 2,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> PreparedRun:
     """Create a run from a `plan.toml` (`PlanError` lists every problem in it).
 
@@ -465,6 +551,7 @@ async def prepare_run_from_plan(
         max_parallel,
         provider_slots,
         exec_slots,
+        agents,
     )
 
 
@@ -481,6 +568,7 @@ async def prepare_plan_run(
     max_parallel: int | None = None,
     provider_slots: int = 2,
     exec_slots: int = 2,
+    agents: Mapping[str, AgentConfig] | None = None,
 ) -> PreparedRun:
     """Create a run from a `Plan` already in memory (the interactive session's proposed plan)."""
     return await _prepare(
@@ -496,6 +584,7 @@ async def prepare_plan_run(
         max_parallel,
         provider_slots,
         exec_slots,
+        agents,
     )
 
 
@@ -631,6 +720,10 @@ async def resume_run(
         run_id = unfinished[0].id
     created = _run_created(run_id)
     options = created.get("options") or {}
+    agents = {
+        name: AgentConfig.model_validate(config)
+        for name, config in (options.get("agents") or {}).items()
+    }
     orchestrator, store = _assemble(
         Path(created["repo_path"]),
         options.get("worker_kinds") or [options.get("worker_kind", "fake")],
@@ -641,6 +734,7 @@ async def resume_run(
         unsafe_no_sandbox or bool(options.get("unsafe_no_sandbox", False)),
         provider_slots=options.get("provider_slots", 2),
         exec_slots=options.get("exec_slots", 2),
+        agents=agents,
     )
     try:
         await orchestrator.recover()

@@ -144,7 +144,7 @@ membuat harness hemat token. Laporan dasar: [research/orca.md](research/orca.md)
 | EXT-06 | Mode koordinator: `--json`, `caecilia wait`, `caecilia guide` | [42](prompts/42-mode-koordinator.md) | EXT-05 |
 | E2E-01 | Demo ujung ke ujung: proyek C++ dan website statis | [43](prompts/43-demo-ujung-ke-ujung.md) | EXT-02, TOK-01 |
 
-- [ ] EXT-01
+- [x] EXT-01
 - [ ] EXT-02
 - [ ] EXT-03
 - [ ] EXT-04
@@ -217,6 +217,8 @@ Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, s
     asumsi timing di tes lalu skenarionya dibuat deterministik.
 
 ## Log
+
+- 2026-11-24 — EXT-01 selesai: kontrak tiga worker, profil dan deteksi agent, konfigurasi `[agents.*]` dan doctor, env per auth, proses agent dengan cancel pohon proses dan penanganan pipe turunan, fake-agent melewati gate/write set, log teredaksi direferensikan lewat `worker.log`; `scripts/check.ps1` lulus (921 tes lulus, 3 dilewati karena batas platform). Adapter agent sungguhan menunggu prompt 37–38.
 
 - 2026-11-10 — M0-01 scaffold dibuat dari audit v0.2.
 - 2026-11-11 — Dokumen diterjemahkan ke Bahasa Indonesia; M1 dipecah menjadi 14 task dengan prompt.

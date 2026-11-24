@@ -22,7 +22,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 CONFIG_NAME = ".caecilia.toml"
 SUPPORTED_PROVIDERS = ("deepseek",)
-WorkerName = Literal["fake", "native"]
+AgentName = Literal["claude-code", "codex", "gemini-cli", "fake-agent"]
+#: External agent CLI programs the harness can drive (ADR-0018). `fake-agent` is the demo stand-in.
+AGENT_NAMES: tuple[AgentName, ...] = ("claude-code", "codex", "gemini-cli", "fake-agent")
+WorkerName = Literal["fake", "native", "claude-code", "codex", "gemini-cli", "fake-agent"]
+WORKER_NAMES: tuple[str, ...] = ("fake", "native", *AGENT_NAMES)
+AuthMode = Literal["subscription", "api-key"]
 
 # Field names that look like they could carry a credential.
 _SECRET_FIELD = re.compile(r"key|token|secret|password|passwd|credential", re.IGNORECASE)
@@ -66,6 +71,26 @@ def parse_check(cmd: str, posix: bool | None = None) -> list[str]:
     return tokens
 
 
+class AgentConfig(BaseModel):
+    """`[agents.<nama>]`: overrides of one external agent profile (EXT-01, ADR-0018)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    #: How the agent authenticates: its own login (subscription) or a key from the keychain.
+    auth: AuthMode | None = None
+    model: str | None = None
+    extra_args: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_secrets(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            secret = [name for name in data if _SECRET_FIELD.search(str(name))]
+            if secret:
+                raise ValueError(f"field {', '.join(secret)} ditolak: {_USE_KEY_SET}")
+        return data
+
+
 class ProjectConfig(BaseModel):
     """The `.caecilia.toml` schema (docs/architecture.md). Unknown fields are refused."""
 
@@ -82,6 +107,8 @@ class ProjectConfig(BaseModel):
     target: str | None = None
     #: argv prefixes approved automatically in non-interactive mode (CLI-02).
     allow_commands: list[list[str]] = Field(default_factory=list)
+    #: Per-agent overrides for the external agent workers (EXT-01).
+    agents: dict[str, AgentConfig] = Field(default_factory=dict)
 
     @model_validator(mode="before")
     @classmethod
@@ -98,6 +125,11 @@ class ProjectConfig(BaseModel):
             raise ValueError("check tidak boleh berupa list kosong")
         if any(not prefix for prefix in self.allow_commands):
             raise ValueError("setiap isi allow_commands harus berupa argv yang tidak kosong")
+        unknown = sorted(set(self.agents) - set(AGENT_NAMES))
+        if unknown:
+            raise ValueError(
+                f"agent tidak dikenal: {', '.join(unknown)} (tersedia: {', '.join(AGENT_NAMES)})"
+            )
         return self
 
 
@@ -159,10 +191,16 @@ def load_config(path: Path) -> ProjectConfig:
 def dump_config(config: ProjectConfig) -> str:
     """TOML for `config`, leaving out unset fields (used by `caecilia init`)."""
     lines = ["version = 1"]
-    for name, value in config.model_dump(exclude={"version"}).items():
+    for name, value in config.model_dump(exclude={"version", "agents"}).items():
         if value is None or value == []:
             continue
         lines.append(f"{name} = {_toml_value(value)}")
+    for agent_name, agent in config.agents.items():
+        lines += ["", f"[agents.{agent_name}]"]
+        for name, value in agent.model_dump(exclude_none=True).items():
+            if value == []:
+                continue
+            lines.append(f"{name} = {_toml_value(value)}")
     return "\n".join(lines) + "\n"
 
 
@@ -206,6 +244,8 @@ class RunOptions:
     exec_slots: int
     target: str | None
     allow_commands: list[list[str]] = field(default_factory=list)
+    #: `[agents.*]` overrides, keyed by agent name (EXT-01).
+    agents: dict[str, AgentConfig] = field(default_factory=dict)
 
     def require_check(self) -> list[str]:
         if not self.check:
@@ -225,8 +265,8 @@ def resolve_options(cli: CliValues, config: ProjectConfig | None) -> RunOptions:
     raw_check = pick(cli.check, cfg.check, None)
     check = parse_check(raw_check) if isinstance(raw_check, str) else raw_check
     worker = pick(cli.worker, cfg.worker, "native")
-    if worker not in ("fake", "native"):
-        raise ValueError(f"worker tidak dikenal: {worker!r} (tersedia: fake, native)")
+    if worker not in WORKER_NAMES:
+        raise ValueError(f"worker tidak dikenal: {worker!r} (tersedia: {', '.join(WORKER_NAMES)})")
     provider = pick(cli.provider, cfg.provider, SUPPORTED_PROVIDERS[0])
     if worker == "native" and provider not in SUPPORTED_PROVIDERS:
         raise ValueError(
@@ -242,6 +282,7 @@ def resolve_options(cli: CliValues, config: ProjectConfig | None) -> RunOptions:
         exec_slots=pick(cli.exec_slots, cfg.exec_slots, 2),
         target=pick(cli.target, cfg.target, None),
         allow_commands=[list(prefix) for prefix in cfg.allow_commands],
+        agents=dict(cfg.agents),
     )
 
 
