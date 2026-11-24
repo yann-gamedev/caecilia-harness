@@ -893,6 +893,25 @@ class Orchestrator:
                     for name in self._run_usage[task.run_id]:
                         self._run_usage[task.run_id][name] += int(event.data.get(name, 0))
                     self._check_run_budget(task.run_id)
+                elif event.durable and event.kind == "progress" and event.data.get("log"):
+                    digest = event.data["log"]
+                    if not isinstance(digest, str):
+                        raise OrchestratorError("worker log reference must be a string")
+                    path, size = self.artifact_info(digest) if self.artifact_info else (digest, 0)
+                    self.store.register_artifact(digest, "log", task.id, path, size)
+                    self._append_task(
+                        task.id,
+                        [
+                            self._event(
+                                f"task:{task.id}",
+                                "worker.log",
+                                {
+                                    "log_ref": digest,
+                                    "attempt": live.handle.attempt,
+                                },
+                            )
+                        ],
+                    )
             result = await live.worker.result(live.handle)
         finally:
             heartbeat.cancel()

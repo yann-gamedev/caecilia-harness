@@ -83,7 +83,8 @@ menjadi CAS. `idempotency_key` unik. Payload besar disimpan sebagai artefak dan 
 
 Tipe awal: `run.created`, `run.finished`, `task.created`, `task.state_changed`, `task.lease_acquired`,
 `task.lease_released`, `task.lease_expired`, `task.context_stale`, `document.updated`,
-`worker.started`, `worker.result`, `gate.started`, `gate.passed`, `gate.failed`,
+`worker.started`, `worker.result`, `worker.log {log_ref, attempt}` (artefak output agent yang
+sudah diredaksi, didaftarkan orchestrator per task), `gate.started`, `gate.passed`, `gate.failed`,
 `approval.requested`, `approval.decided`, `usage.recorded`, `graph.revised` (M2),
 `run.budget_exceeded` (M2).
 

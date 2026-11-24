@@ -19,6 +19,9 @@ SERVICE = "caecilia-harness"
 ENV_VARS: dict[str, str] = {
     "deepseek": "DEEPSEEK_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    # Keys for external agent CLIs with `auth = "api-key"` (EXT-01, ADR-0018).
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
 }
 
 _known_keys: set[str] = set()
