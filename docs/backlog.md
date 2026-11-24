@@ -128,6 +128,34 @@ Boleh dikerjakan sebelum M3 selesai; tidak bergantung pada konteks bersama.
 - [x] CLI-01
 - [ ] CLI-02
 
+## Agent eksternal dan efisiensi token (ADR-0018, ADR-0019) — prioritas berikutnya
+
+Memajukan sebagian M5. Ini jalur sah memakai langganan (Claude Code, Codex, Gemini CLI login sendiri) dan
+membuat harness hemat token. Laporan dasar: [research/orca.md](research/orca.md).
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| EXT-01 | Kontrak worker agent eksternal, profil agent, contract suite | [36](prompts/36-kontrak-agent-eksternal.md) | CLI-01 |
+| EXT-02 | Adapter Claude Code headless (stream JSON) | [37](prompts/37-adapter-claude-code.md) | EXT-01 |
+| EXT-03 | Adapter Codex CLI dan Gemini CLI | [38](prompts/38-adapter-codex-gemini.md) | EXT-02, D14 (untuk mode langganan) |
+| EXT-04 | Dispatch preamble + laporan akhir terstruktur | [39](prompts/39-dispatch-preamble-dan-laporan.md) | EXT-01 |
+| EXT-05 | Pertanyaan dan eskalasi dari worker (`caecilia answer`) | [40](prompts/40-tanya-dan-eskalasi.md) | EXT-04 |
+| TOK-01 | Peran model, budget prompt, metrik token per peran | [41](prompts/41-peran-model-dan-budget-token.md) | EXT-04 |
+| EXT-06 | Mode koordinator: `--json`, `caecilia wait`, `caecilia guide` | [42](prompts/42-mode-koordinator.md) | EXT-05 |
+| E2E-01 | Demo ujung ke ujung: proyek C++ dan website statis | [43](prompts/43-demo-ujung-ke-ujung.md) | EXT-02, TOK-01 |
+
+- [ ] EXT-01
+- [ ] EXT-02
+- [ ] EXT-03
+- [ ] EXT-04
+- [ ] EXT-05
+- [ ] TOK-01
+- [ ] EXT-06
+- [ ] E2E-01
+
+Diterima jika: task yang sama bisa dikerjakan `native` dan `claude-code` dengan gate yang sama; harness
+tidak pernah membaca kredensial agent; laporan worker ≤ 3 kalimat; token per peran terlihat di `status`.
+
 ## M7 — Control API lokal dan Retro Dark TUI
 
 | ID | Task | Prompt | Dependensi |
@@ -160,8 +188,9 @@ dan desain pemilik tersedia.
   contract diff, rescue branch.
   - Diterima jika: dua diff yang lolos sendiri-sendiri tetapi bentrok → yang kedua gagal dengan laporan;
     crash di tengah merge tidak pernah merusak branch target.
-- [ ] **M5 — Adapter agent eksternal.** Contract suite worker; adapter Claude Agent SDK (API key),
-  Codex app-server, ACP generik.
+- [ ] **M5 — Adapter agent eksternal (sisa).** Contract suite dan adapter headless Claude Code / Codex /
+  Gemini CLI sudah dimajukan ke EXT-01 s.d. EXT-03. Sisa M5: Codex app-server, ACP generik, status lewat
+  hook / protokol terminal.
   - Diterima jika: semua lulus contract suite yang sama; cancel membunuh process group dalam batas grace;
     harness menghitung diff walau adapter tidak melapor.
 - [ ] **M6 — Plugin, skill, MCP.** Plugin host out-of-process dengan manifest izin; skill berversi;
@@ -219,3 +248,4 @@ Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, s
 - 2026-11-23 — M3 dipecah menjadi 6 task (prompt 24–29) dengan ADR-0014; prompt 23 (provider Gemini, opsional) dan keputusan D12 ditambahkan.
 - 2026-11-23 — ADR-0015: `caecilia` jadi perintah global dengan sesi interaktif dan mode `-p`; GUI desktop pasti dibangun. Prompt 30–35 ditambahkan (CLI-01/02, M7-01/02, M8-01/02); keputusan D13 dibuka.
 - 2026-11-24 — CLI-01 selesai: `caecilia` bisa dipasang global (`uv tool install --editable .`), repo default dari folder kerja, `.caecilia.toml` dengan prioritas CLI → config → default (field rahasia ditolak), `caecilia init`, `--version`/`-V`, cek doctor `path`/`config`/`api-key`; `status`/`resume` per repo; gate mengabaikan file untracked.
+- 2026-11-24 — Reverse engineering Orca (`docs/research/orca.md`). ADR-0018 (worker dari agent CLI resmi, termasuk langganan) dan ADR-0019 (efisiensi token). Prompt 36–43 ditambahkan (EXT-01..06, TOK-01, E2E-01); keputusan D14 dibuka; D1 diperbarui.

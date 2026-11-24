@@ -5,7 +5,7 @@ Setelah diputuskan: isi kolom "Keputusan", lalu bila perlu ubah ADR terkait.
 
 | ID | Pertanyaan | Default sementara | Keputusan |
 | --- | --- | --- | --- |
-| D1 | Adapter agent eksternal (Claude Code, Codex) masuk MVP? | Tidak. Native worker dulu; eksternal di M5. | |
+| D1 | Adapter agent eksternal (Claude Code, Codex) masuk MVP? | Tidak. Native worker dulu; eksternal di M5. | **Diperbarui 2026-11-24:** dimajukan sebagai EXT-01 s.d. EXT-06 (prompt 36–42), karena ini satu-satunya jalur sah memakai langganan. Lihat ADR-0018. |
 | D2 | Provider model pertama untuk native worker | Belum dipilih. Prompt 14 (M1-14) terblokir; M1-01 s.d. M1-13 jalan dengan provider dan worker palsu. | **Diputuskan 2026-11-16:** DeepSeek, lewat API resminya dengan API key (ADR-0007). Dikerjakan di M1-14. |
 | D3 | Bahasa implementasi | Python 3.12 (ADR-0001). | |
 | D4 | Otonomi merge | Fast-forward ke branch utama minta konfirmasi; `--auto-merge` opsional. | |
@@ -18,3 +18,4 @@ Setelah diputuskan: isi kolom "Keputusan", lalu bila perlu ubah ADR terkait.
 | D11 | `max_parallel` default | 2 sampai benchmark M2-B (prompt 22) selesai; lalu ditetapkan dari data. | |
 | D12 | Provider model kedua (Gemini) | Belum. Key Gemini sudah bisa disimpan, tetapi belum dipakai worker atau planner. Prompt 23 menunggu keputusan ini. | |
 | D13 | Teknologi GUI desktop | Belum. Prompt 34 (M8-01) menyiapkan perbandingan Tauri / Electron / PySide6 dan spike; pemilik memilih setelahnya. | |
+| D14 | Agent mana yang boleh dipakai dengan **langganan** lewat harness | Claude Code: boleh (login sendiri ke binary resmi, ADR-0018). Codex dan Gemini CLI: hanya `auth = "api-key"` sampai pemilik membaca terms masing-masing dan mengisi kolom ini. | |
