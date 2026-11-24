@@ -72,7 +72,7 @@ def test_outside_a_git_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["run", "x", "--check", "python -V", "--worker", "fake"])
     assert result.exit_code == 1
-    assert "bukan bagian dari repo Git" in result.output
+    assert "bukan repo Git" in result.output
 
 
 def test_invalid_config_is_reported(git_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,7 +191,7 @@ def test_init_can_stage_the_file_but_never_commits(
 def test_init_outside_a_git_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(app, ["init", "--check", "x", "--worker", "fake"])
-    assert result.exit_code == 1 and "bukan bagian dari repo Git" in result.output
+    assert result.exit_code == 1 and "bukan repo Git" in result.output
 
 
 # --- version and doctor ---

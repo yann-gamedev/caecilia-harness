@@ -176,7 +176,7 @@ def test_no_config_is_fine(git_repo: Path) -> None:  # noqa: F811
 
 
 def test_outside_a_git_repo_is_a_clear_error(tmp_path: Path) -> None:
-    with pytest.raises(NotAGitRepoError, match="bukan bagian dari repo Git"):
+    with pytest.raises(NotAGitRepoError, match="bukan repo Git"):
         repo_root(tmp_path)
 
 

@@ -111,8 +111,7 @@ def repo_root(start: Path) -> Path:
     )
     if done.returncode != 0:
         raise NotAGitRepoError(
-            f"{start} bukan bagian dari repo Git; jalankan caecilia di dalam repo, "
-            "atau pakai --repo"
+            f"bukan repo Git: {start}; jalankan caecilia di dalam repo, atau pakai --repo"
         )
     return Path(done.stdout.strip()).resolve()
 
