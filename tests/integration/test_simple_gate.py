@@ -189,6 +189,16 @@ async def test_not_checked_out_target_is_moved_by_update_ref(git_repo: Path) -> 
     assert git(git_repo, "rev-parse", "HEAD") == head_before  # main untouched
 
 
+async def test_untracked_files_in_the_checkout_do_not_block_the_merge(git_repo: Path) -> None:
+    # e.g. a `.caecilia.toml` that `caecilia init` wrote and nobody committed yet (CLI-01).
+    # git itself refuses a fast-forward that would overwrite an untracked file.
+    (git_repo / ".caecilia.toml").write_bytes(b"version = 1\n")
+    diff = await _task_diff(git_repo, "t12", {"feature.txt": "x\n"})
+    report = await _gate(git_repo).check(diff, "main")
+    assert report.merged_commit == git(git_repo, "rev-parse", "main")
+    assert (git_repo / ".caecilia.toml").read_bytes() == b"version = 1\n"
+
+
 async def test_dirty_checked_out_target_needs_human(git_repo: Path) -> None:
     old = git(git_repo, "rev-parse", "main")
     diff = await _task_diff(git_repo, "t10", {"feature.txt": "x\n"})

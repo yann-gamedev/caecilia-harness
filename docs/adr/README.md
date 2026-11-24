@@ -16,5 +16,7 @@ Satu file per keputusan. Nilai status: `Proposed` (jangan diimplementasikan), `D
 | [0009](0009-out-of-process-plugins.md) | Plugin pihak ketiga berjalan di luar proses | Diterima |
 | [0010](0010-slot-scope.md) | Slot konkurensi hanya dipegang selama operasi | Diterima |
 | [0011](0011-durable-vs-ephemeral-events.md) | Event durable vs ephemeral | Diterima |
-| [0012](0012-tui-dulu-gui-menyusul.md) | TUI dulu, GUI desktop menyusul sebagai frontend kedua | Diterima |
+| [0012](0012-tui-dulu-gui-menyusul.md) | TUI dulu, GUI desktop menyusul sebagai frontend kedua | Diterima, diubah ADR-0015 |
 | [0013](0013-rencana-run-dan-penjadwalan-paralel.md) | Rencana run dan penjadwalan paralel | Diterima |
+| [0014](0014-konteks-bersama.md) | Konteks bersama: dokumen berversi, pin, dan invalidasi | Diterima |
+| [0015](0015-perintah-global-dan-gui.md) | `caecilia` sebagai perintah global, sesi interaktif, dan GUI yang pasti dibangun | Diterima |

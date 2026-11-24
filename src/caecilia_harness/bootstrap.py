@@ -509,11 +509,18 @@ async def plan_goal(
 
 
 async def resume_run(
-    prompter: UserPrompter, run_id: str | None = None, unsafe_no_sandbox: bool = False
+    prompter: UserPrompter,
+    run_id: str | None = None,
+    unsafe_no_sandbox: bool = False,
+    repo: Path | None = None,
 ) -> PreparedRun:
-    """Rebuild the orchestrator of an unfinished run (the latest one by default) and recover."""
+    """Rebuild the orchestrator of an unfinished run and recover.
+
+    Default: the latest unfinished run (of `repo`, if given).
+    """
     if run_id is None:
-        unfinished = [run for run in list_runs(limit=1000) if run.status == "running"]
+        candidates = list_runs(limit=1000, repo=repo)
+        unfinished = [run for run in candidates if run.status == "running"]
         if not unfinished:
             raise AppError("tidak ada run yang belum selesai")
         run_id = unfinished[0].id
@@ -557,19 +564,25 @@ def _run_created(run_id: str) -> dict[str, Any]:
     raise AppError(f"run tidak ditemukan: {run_id}")
 
 
-def list_runs(limit: int = 20) -> list[RunSummary]:
-    """Most recent runs first."""
+def _same_path(a: str | Path, b: str | Path) -> bool:
+    """Path equality as the OS sees it (Windows paths are case-insensitive)."""
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def list_runs(limit: int = 20, repo: Path | None = None) -> list[RunSummary]:
+    """Most recent runs first; only those of `repo` if given (the global command's default)."""
     store = _readonly_store()
     if store is None:
         return []
     try:
         rows = store.connection.execute(
-            "SELECT id, goal, status, created_at FROM runs "
-            "ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (limit,),
+            "SELECT id, goal, status, created_at, repo_path FROM runs "
+            "ORDER BY created_at DESC, rowid DESC"
         ).fetchall()
     finally:
         store.close()
+    if repo is not None:
+        rows = [row for row in rows if _same_path(row["repo_path"], repo)]
     return [
         RunSummary(
             id=row["id"],
@@ -577,7 +590,7 @@ def list_runs(limit: int = 20) -> list[RunSummary]:
             status=row["status"],
             created_at=datetime.fromisoformat(row["created_at"]),
         )
-        for row in rows
+        for row in rows[:limit]
     ]
 
 
@@ -672,9 +685,9 @@ def revise_graph(run_id: str, ops: Sequence[GraphOp], expected_revision: int | N
         orchestrator.close()
 
 
-def get_run_status(run_id: str | None = None) -> RunStatus | None:
-    """The run (latest by default) with its tasks; None if there are no runs yet."""
-    runs = list_runs(limit=1000)
+def get_run_status(run_id: str | None = None, repo: Path | None = None) -> RunStatus | None:
+    """The run (latest by default, of `repo` if given) with its tasks; None if there is none."""
+    runs = list_runs(limit=1000, repo=None if run_id is not None else repo)
     if run_id is not None:
         runs = [run for run in runs if run.id == run_id]
         if not runs:

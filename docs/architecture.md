@@ -61,6 +61,7 @@ Tabel yang berlaku adalah `src/caecilia_harness/core/states.py`.
 | REWORK | READY | rework dijadwalkan bersama laporan gate |
 | RUNNING, AWAITING_GATE | STALE | dokumen yang di-pin berubah revisi |
 | STALE | READY, REWORK | jalankan ulang, atau rework dengan konteks baru |
+| STALE | NEEDS_HUMAN | sudah 3 kali basi dalam satu run (M3, ADR-0014) |
 | RUNNING | RETRY_WAIT | error sementara dan task idempoten |
 | RETRY_WAIT | READY | waktu backoff habis |
 | RUNNING | FAILED | error permanen atau retry habis |
@@ -225,6 +226,22 @@ Laporan memuat `checks.write_set=false`, pola yang berlaku, dan semua file pelan
 Daftar file diff memakai `--no-renames` agar pemindahan memeriksa sumber yang dihapus dan tujuan yang ditulis.
 Perluasan cakupan prompt 18 ke `workspace/git_worktree.py` disetujui pemilik pada 2026-11-19.
 
+## Konteks bersama (M3, ADR-0014)
+
+| Bagian | Bentuk |
+| --- | --- |
+| Dokumen | `id` (mis. `contract:api`), `kind` (`contract`/`decision`/`note`/`spec`), `revision`, isi = artefak |
+| Event dokumen | `document.created`, `document.updated` di stream `doc:<run_id>:<id>`, CAS revisi |
+| Deklarasi di plan | `[[doc]]` (id, kind, file awal) dan `context = ["contract:api"]` per task |
+| Pin | dicatat saat spawn di `context_pins` dan `worker.started.pins` |
+| Invalidasi | `task.context_stale`; RUNNING → STALE → READY; AWAITING_GATE → STALE → REWORK; INTEGRATING dibiarkan |
+| Usulan worker | `proposal.created` → validasi → approval → `proposal.applied` / `proposal.rejected` |
+| Handoff | `task.handoff {summary, files_changed}` saat DONE; dikirim ke task dependen langsung |
+| Batas context pack | 60.000 karakter (default), dipotong dengan penanda id + revisi |
+
+Context pack tidak pernah memuat transkrip worker lain. Semua isi dokumen dan handoff dibungkus penanda
+data tak tepercaya, karena isinya berasal dari output model.
+
 ## Aturan konkurensi
 
 1. Satu penulis DB: orchestrator. Lease di-insert/CAS di dalam transaksi.
@@ -237,19 +254,36 @@ Perluasan cakupan prompt 18 ke `workspace/git_worktree.py` disetujui pemilik pad
 6. Setiap worker berjalan di process group sendiri; cancel = soft → terminate → kill.
 7. Task non-idempoten yang crash masuk NEEDS_HUMAN, tidak pernah di-retry otomatis.
 
-## Antarmuka: TUI sekarang, GUI nanti (ADR-0012)
+## Antarmuka: perintah global, TUI, dan GUI (ADR-0012, ADR-0015)
 
 Caecilia Harness adalah aplikasi lokal: semua state, worktree, dan kredensial ada di mesin pengguna.
-Antarmukanya bertahap:
+Cara pakainya seperti Claude Code / Gemini CLI: `caecilia` dipanggil dari terminal di folder proyek.
 
 | Tahap | Frontend | Cara bicara ke core |
 | --- | --- | --- |
-| M1 | CLI (`caecilia run/status/resume`) | Panggilan fungsi langsung di proses yang sama |
-| M7 | Retro Dark TUI (Textual) | Control API lokal (approve, cancel, subscribe event) + baca DB read-only |
-| M8 (opsional) | GUI desktop berjendela | Control API lokal yang sama; tidak ada perubahan di core |
+| M1–M3 | Subcommand (`caecilia run/plan/status/graph/doc`) | Fungsi aplikasi di proses yang sama |
+| CLI-01 | Perintah global di PATH + `.caecilia.toml` per proyek | — |
+| CLI-02 | Sesi interaktif mode baris (`caecilia`) dan mode skrip (`caecilia -p`) | Fungsi aplikasi di proses yang sama |
+| M7 | Control API lokal (M7-01) + Retro Dark TUI layar penuh (M7-02) | Control API + baca DB read-only |
+| M8 | GUI desktop berjendela (pasti dibangun; teknologi = D13) | Control API yang sama; tidak ada perubahan di core |
 
 Aturan: `interfaces/` hanya berisi parsing input, format tampilan, dan implementasi `UserPrompter`.
 Semua logika yang dibutuhkan lebih dari satu frontend berada di luar `interfaces/` (mis. `bootstrap.py`).
+
+### `.caecilia.toml` (konfigurasi proyek, CLI-01)
+
+```toml
+version = 1
+check = "python -m pytest"        # perintah gate
+worker = "native"                 # fake | native
+provider = "deepseek"
+model = "<nama model>"
+max_parallel = 2
+target = "main"                   # opsional
+allow_commands = [["python", "-m", "pytest"], ["uv", "run", "pytest"]]   # hanya untuk mode non-interaktif
+```
+
+Prioritas nilai: opsi CLI → `.caecilia.toml` → default. Field tak dikenal ditolak. Tidak pernah berisi API key.
 
 ## Interaksi pengguna di M1
 

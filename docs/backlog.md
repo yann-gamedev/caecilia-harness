@@ -82,12 +82,80 @@ Ditunda dari M2 (dicatat agar tidak hilang): worker mengusulkan task atau edge b
 (ADR-0003) → M3 bersama konteks bersama; backoff waktu untuk RETRY_WAIT → M4; menaikkan budget run yang
 sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → setelah M2-B.
 
-## M3–M8 (kasar; dipecah jadi prompt setelah milestone sebelumnya selesai dan disetujui pemilik)
+## Provider tambahan (opsional)
 
-- [ ] **M3 — Konteks bersama.** `documents` dengan CAS, `context_pins`, context pack builder,
-  `task.context_stale`, ringkasan handoff.
-  - Diterima jika: dokumen yang di-pin berubah saat task berjalan → task STALE dalam satu siklus event;
-    CAS basi ditolak; context pack tidak pernah berisi transkrip worker lain.
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| PRV-01 | Provider Gemini + pilihan provider per run | [23](prompts/23-provider-gemini.md) | M2-04, keputusan D12 |
+
+- [ ] PRV-01
+
+## M3 — Konteks bersama
+
+Keputusan desain: ADR-0014 dan bagian "Konteks bersama" di `docs/architecture.md`.
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| M3-01 | Dokumen berversi: store, CAS, CLI `doc` | [24](prompts/24-dokumen-berversi.md) | M2-07 |
+| M3-02 | Pin konteks + context pack builder | [25](prompts/25-pin-dan-context-pack.md) | M3-01 |
+| M3-03 | Invalidasi: `task.context_stale` dan jalur STALE | [26](prompts/26-invalidasi-stale.md) | M3-02 |
+| M3-04 | Usulan worker: dokumen, task, dependensi | [27](prompts/27-usulan-worker.md) | M3-03 |
+| M3-05 | Handoff blocker + menaikkan budget run | [28](prompts/28-handoff-dan-budget.md) | M3-02 |
+| M3-06 | Chaos dan tes konkurensi konteks bersama | [29](prompts/29-chaos-konteks.md) | M3-04, M3-05 |
+
+Checklist:
+
+- [ ] M3-01
+- [ ] M3-02
+- [ ] M3-03
+- [ ] M3-04
+- [ ] M3-05
+- [ ] M3-06
+
+Diterima jika (milestone): dokumen yang di-pin berubah saat task berjalan → task STALE dalam satu siklus
+event; CAS basi ditolak; context pack tidak pernah berisi transkrip worker lain; usulan worker tidak pernah
+diterapkan tanpa approval; crash di tengah invalidasi tidak meninggalkan task dengan pin yang salah.
+
+## CLI global dan sesi interaktif (ADR-0015)
+
+Boleh dikerjakan sebelum M3 selesai; tidak bergantung pada konteks bersama.
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| CLI-01 | Perintah global `caecilia` + `.caecilia.toml` + `caecilia init` | [30](prompts/30-perintah-global.md) | M2-07 |
+| CLI-02 | Sesi interaktif mode baris (`caecilia`) + mode skrip (`caecilia -p`) | [31](prompts/31-sesi-interaktif.md) | CLI-01 |
+
+- [x] CLI-01
+- [ ] CLI-02
+
+## M7 — Control API lokal dan Retro Dark TUI
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| M7-01 | Control API lokal berversi (approve, cancel, subscribe, query) | [32](prompts/32-control-api.md) | CLI-02 |
+| M7-02 | Retro Dark TUI layar penuh di atas control API | [33](prompts/33-tui-textual.md) | M7-01 |
+
+- [ ] M7-01
+- [ ] M7-02
+
+Catatan urutan: M7 tidak menunggu M4–M6. Fitur M4–M6 yang menambah data atau aksi baru wajib menambah
+endpoint control API dengan versi baru.
+
+## M8 — GUI desktop (pasti dibangun, ADR-0015)
+
+| ID | Task | Prompt | Dependensi |
+| --- | --- | --- | --- |
+| M8-01 | Perbandingan teknologi + spike GUI → keputusan D13 | [34](prompts/34-gui-teknologi-dan-spike.md) | M7-01, desain layar dari pemilik |
+| M8-02 | Kerangka GUI: daftar run, task graph, antrean approval | [35](prompts/35-gui-kerangka.md) | M8-01, keputusan D13 |
+
+- [ ] M8-01
+- [ ] M8-02
+
+Layar GUI berikutnya (editor plan, dokumen, usage/budget, pengaturan) dipecah jadi prompt setelah M8-02
+dan desain pemilik tersedia.
+
+## M4–M6 (kasar; dipecah jadi prompt setelah milestone sebelumnya selesai dan disetujui pemilik)
+
 - [ ] **M4 — Integration gate penuh.** Merge queue serial, rebase otomatis, lint/tipe/tes,
   contract diff, rescue branch.
   - Diterima jika: dua diff yang lolos sendiri-sendiri tetapi bentrok → yang kedua gagal dengan laporan;
@@ -100,17 +168,6 @@ sudah habis lewat revisi graf → M3; `max_cost_usd` (butuh tabel harga) → set
   MCP client dengan approval per tool.
   - Diterima jika: plugin yang meminta izin di luar manifest ditolak; tool MCP baru butuh approval;
     nama tool remote tidak bisa membayangi tool lokal.
-- [ ] **M7 — Retro Dark TUI.** Aplikasi Textual: graph / sesi / inspector / antrean approval / ticker
-  event; breakpoint ≥160, 120–159, 80–119, <80 kolom; `--plain`; tema high-contrast; control API lokal
-  yang netral terhadap frontend untuk approve/cancel/subscribe dari proses lain (ADR-0012).
-  - Diterima jika: snapshot test per breakpoint; semua aksi bisa lewat keyboard dan CLI; render tidak
-    pernah memblokir loop > 50 ms dengan 5 sesi streaming; semua aksi TUI juga bisa dilakukan lewat
-    control API tanpa TUI (dites dengan klien API sederhana).
-- [ ] **M8 — GUI desktop (opsional, menunggu keputusan pemilik).** Frontend kedua berjendela di atas
-  control API dari M7. Teknologi dipilih lewat ADR baru saat dimulai. Tidak ada perubahan di core.
-  - Diterima jika: semua aksi utama TUI (lihat graph, pantau sesi, approve, cancel) tersedia di GUI; TUI
-    tetap berfungsi; tidak ada import dari `interfaces/tui` ke GUI atau sebaliknya.
-
 ## Bug terbuka
 
 Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, simpan output lengkapnya
@@ -159,3 +216,6 @@ Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, s
 - 2026-11-23 — M2-06 selesai: operasi revisi graf (`add_task`, `set_blockers`, `cancel_task`, `retry_task`), `Orchestrator.revise_graph` atomik dengan CAS dan validasi seluruh graf, proyeksi `task.blockers_changed`/`run.reopened`, perintah `caecilia graph show/add/deps/cancel/retry`.
 - 2026-11-23 — M2-07 selesai: hook chaos `TITIK@id` dan `BUDGET_EXCEEDED`, `check_invariants`, 5 skenario crash paralel, uji stres slot (5 seed + pertanyaan tertunda). Bug recovery ditemukan dan diperbaiki: spawn yang terputus setelah worktree dibuat membuat lease berikutnya gagal; nama worktree kini per lease.
 - 2026-11-23 — BUG-01 dicatat: kegagalan sesekali di suite chaos paralel (2 dari ~7 putaran awal, lalu 37 putaran lulus); penyebab belum diketahui.
+- 2026-11-23 — M3 dipecah menjadi 6 task (prompt 24–29) dengan ADR-0014; prompt 23 (provider Gemini, opsional) dan keputusan D12 ditambahkan.
+- 2026-11-23 — ADR-0015: `caecilia` jadi perintah global dengan sesi interaktif dan mode `-p`; GUI desktop pasti dibangun. Prompt 30–35 ditambahkan (CLI-01/02, M7-01/02, M8-01/02); keputusan D13 dibuka.
+- 2026-11-24 — CLI-01 selesai: `caecilia` bisa dipasang global (`uv tool install --editable .`), repo default dari folder kerja, `.caecilia.toml` dengan prioritas CLI → config → default (field rahasia ditolak), `caecilia init`, `--version`/`-V`, cek doctor `path`/`config`/`api-key`; `status`/`resume` per repo; gate mengabaikan file untracked.

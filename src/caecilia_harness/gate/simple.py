@@ -152,7 +152,10 @@ class SimpleGate:
     ) -> GateReport:
         checkout = await self._checked_out_at(target_ref)
         if checkout is not None:
-            status = await run_git(["status", "--porcelain"], checkout)
+            # Only changes to tracked files make the checkout unsafe to fast-forward: git itself
+            # refuses a merge that would overwrite an untracked file, and an uncommitted
+            # `.caecilia.toml` must not block every merge (CLI-01).
+            status = await run_git(["status", "--porcelain", "--untracked-files=no"], checkout)
             if status.text:
                 return report.model_copy(
                     update={
