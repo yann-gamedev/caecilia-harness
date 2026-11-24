@@ -24,6 +24,65 @@ def _echo(text: str) -> None:
     print(text, flush=True)
 
 
+class LineReader:
+    """Reads lines without blocking the event loop; one read at a time.
+
+    The blocking `read_line` runs in a daemon thread rather than `asyncio.to_thread`: a
+    to_thread worker is joined when the program exits, so a Ctrl+C while a question is open
+    would hang until someone pressed Enter. A daemon thread is simply abandoned instead.
+
+    A read whose caller was cancelled (Ctrl+C) stays pending, and the next `read` receives that
+    line. Starting a second thread instead would leave two readers competing for stdin and lose
+    whatever the person typed next (the interactive session shares one reader for its prompt and
+    for approval questions).
+    """
+
+    def __init__(self, read_line: ReadLine = input) -> None:
+        self.read_line = read_line
+        self._pending: asyncio.Future[str | None] | None = None
+
+    @property
+    def pending(self) -> bool:
+        """A read from an interrupted caller is still waiting for its line."""
+        return self._pending is not None
+
+    async def read(self, prompt: str) -> str | None:
+        """One line without its newline; None at end of input (Ctrl+D / Ctrl+Z, closed stdin)."""
+        if self._pending is None:
+            self._pending = self._start(prompt)
+        pending = self._pending
+        try:
+            return await asyncio.shield(pending)
+        finally:
+            if pending.done():
+                self._pending = None
+
+    def _start(self, prompt: str) -> asyncio.Future[str | None]:
+        loop = asyncio.get_running_loop()
+        answer: asyncio.Future[str | None] = loop.create_future()
+
+        def deliver(setter: Callable[[], None]) -> None:
+            if not answer.done():
+                setter()
+
+        def read() -> None:
+            text: str | None
+            try:
+                text = self.read_line(prompt)
+            except EOFError:
+                text = None
+            except KeyboardInterrupt:  # Ctrl+C reached the reading thread: drop the line
+                text = ""
+            except BaseException as exc:  # handed to the awaiting coroutine
+                # Bind now: Python unbinds `exc` when the except block ends.
+                loop.call_soon_threadsafe(deliver, lambda e=exc: answer.set_exception(e))
+                return
+            loop.call_soon_threadsafe(deliver, lambda: answer.set_result(text))
+
+        threading.Thread(target=read, name="caecilia-prompt", daemon=True).start()
+        return answer
+
+
 class TerminalPrompter:
     """Asks y/n questions on the terminal.
 
@@ -37,9 +96,10 @@ class TerminalPrompter:
         read_line: ReadLine = input,
         isatty: Callable[[], bool] = stdin_is_tty,
         echo: Echo = _echo,
+        reader: LineReader | None = None,
     ) -> None:
         self.policy = policy
-        self.read_line = read_line
+        self.reader = reader or LineReader(read_line)
         self.isatty = isatty
         self.echo = echo
         self.remembered: set[tuple[str, ...]] = set()
@@ -97,28 +157,6 @@ class TerminalPrompter:
     async def _read(self, prompt: str) -> str:
         """Read one answer without blocking the event loop (other workers keep running).
 
-        The blocking `read_line` runs in a daemon thread rather than `asyncio.to_thread`: a
-        to_thread worker is joined when the program exits, so a Ctrl+C while a question is open
-        would hang until someone pressed Enter. A daemon thread is simply abandoned instead.
         End of input counts as "no".
         """
-        loop = asyncio.get_running_loop()
-        answer: asyncio.Future[str] = loop.create_future()
-
-        def deliver(setter: Callable[[], None]) -> None:
-            if not answer.done():  # the question may have been cancelled meanwhile
-                setter()
-
-        def read() -> None:
-            try:
-                text = self.read_line(prompt)
-            except EOFError:
-                text = ""
-            except BaseException as exc:  # handed to the awaiting coroutine
-                # Bind now: Python unbinds `exc` when the except block ends.
-                loop.call_soon_threadsafe(deliver, lambda e=exc: answer.set_exception(e))
-                return
-            loop.call_soon_threadsafe(deliver, lambda: answer.set_result(text))
-
-        threading.Thread(target=read, name="caecilia-prompt", daemon=True).start()
-        return (await answer).strip().lower()
+        return (await self.reader.read(prompt) or "").strip().lower()
