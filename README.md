@@ -234,7 +234,38 @@ uv run caecilia resume --run ID
 - Setiap perintah memakai revisi terbaru; `--expect-revision N` membuatnya gagal kalau graf sudah
   berubah sejak Anda melihatnya.
 
-### Worker native (model sungguhan)
+### Fondasi agent eksternal (EXT-01)
+
+`fake-agent` menjalankan program Python palsu sebagai proses terpisah di worktree task. Diff dan
+write set tetap diperiksa harness; perubahan hanya masuk target setelah gate lulus.
+
+```sh
+caecilia run "tambahkan catatan" --worker fake-agent --check "python -m pytest" --auto-merge
+```
+
+Demo ini menulis `FAKE_AGENT.md`. Di checkout sumber, program ada di
+`tests/fixtures/fake_agent_cli.py`; untuk instalasi wheel, set `CAECILIA_FAKE_AGENT` ke salinan
+file tersebut. `fake` dan `fake-agent` membuat plan satu task tanpa memanggil model.
+
+Profil `claude-code`, `codex`, dan `gemini-cli` sudah bisa dikonfigurasi dan dicek oleh
+`caecilia doctor`, tetapi **belum bisa dijalankan** sampai adapter prompt 37–38 tersedia:
+
+```toml
+worker = "claude-code"
+
+[agents.claude-code]
+auth = "subscription"
+model = "sonnet"
+```
+
+Doctor hanya menjalankan `--version`; status login ditulis **dicek saat run pertama**. Harness
+bukan tempat login dan tidak membaca file kredensial agent. Dalam mode `subscription`, semua API
+key vendor dihapus dari env anak. Mode `api-key` menyuntikkan tepat satu variabel resmi dari
+keychain (fallback env pengembangan): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, atau `GEMINI_API_KEY`.
+Simpan dengan `caecilia key set anthropic`, `caecilia key set openai`, atau `caecilia key set gemini`.
+Field rahasia tetap ditolak di `[agents.*]`. Langganan Codex/Gemini masih menunggu keputusan D14.
+
+## Worker native (model sungguhan)
 
 Provider pertama adalah DeepSeek, lewat API resminya dengan **API key** (ADR-0007). Harness tidak
 pernah memakai login akun konsumen. Pemakaian API tunduk pada

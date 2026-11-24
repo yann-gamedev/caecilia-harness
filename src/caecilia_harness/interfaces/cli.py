@@ -52,6 +52,7 @@ from caecilia_harness.planning.plan import Plan, PlanError, load_plan
 from caecilia_harness.planning.planner import PlannerError
 from caecilia_harness.project_config import (
     CONFIG_NAME,
+    WORKER_NAMES,
     CliValues,
     ConfigError,
     MissingOptionError,
@@ -121,6 +122,10 @@ class OutputFormat(StrEnum):
 class WorkerChoice(StrEnum):
     fake = "fake"
     native = "native"
+    claude_code = "claude-code"
+    codex = "codex"
+    gemini_cli = "gemini-cli"
+    fake_agent = "fake-agent"
 
 
 PlainOpt = Annotated[
@@ -219,7 +224,8 @@ def main(
         str | None, typer.Option("--check", help="Perintah gate (atau `check`).")
     ] = None,
     worker: Annotated[
-        WorkerChoice | None, typer.Option("--worker", help="fake atau native (atau `worker`).")
+        WorkerChoice | None,
+        typer.Option("--worker", help=f"{', '.join(WORKER_NAMES)} (atau `worker`)."),
     ] = None,
     model: Annotated[
         str | None, typer.Option("--model", help="Nama model di provider (atau `model`).")
@@ -427,7 +433,7 @@ def init(
         str | None, typer.Option("--check", help='Perintah gate, mis. "python -m pytest".')
     ] = None,
     worker: Annotated[
-        WorkerChoice | None, typer.Option("--worker", help="fake atau native.")
+        WorkerChoice | None, typer.Option("--worker", help=f"{', '.join(WORKER_NAMES)}.")
     ] = None,
     model: Annotated[
         str | None, typer.Option("--model", help="Nama model (wajib untuk worker native).")
@@ -451,8 +457,9 @@ def init(
     chosen_worker = worker.value if worker is not None else None
     if stdin_is_tty():
         check = check or typer.prompt("Perintah check untuk gate", default="python -m pytest")
-        while chosen_worker not in ("fake", "native"):
-            chosen_worker = str(typer.prompt("Worker (fake/native)", default="native")).strip()
+        choices = "/".join(WORKER_NAMES)
+        while chosen_worker not in WORKER_NAMES:
+            chosen_worker = str(typer.prompt(f"Worker ({choices})", default="native")).strip()
         if chosen_worker == "native" and not model:
             model = typer.prompt("Nama model di provider (DeepSeek)")
     else:
@@ -581,6 +588,7 @@ def run(
             max_parallel=options.max_parallel,
             provider_slots=options.provider_slots,
             exec_slots=options.exec_slots,
+            agents=options.agents,
         )
     else:
         assert goal is not None  # noqa: S101 - checked above
@@ -597,6 +605,7 @@ def run(
             max_parallel=options.max_parallel,
             provider_slots=options.provider_slots,
             exec_slots=options.exec_slots,
+            agents=options.agents,
         )
     try:
         status = asyncio.run(_drive(start, plain))

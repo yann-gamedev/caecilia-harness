@@ -13,15 +13,23 @@ from typing import Literal
 
 from caecilia_harness.paths import harness_home
 from caecilia_harness.project_config import (
+    AGENT_NAMES,
     CONFIG_NAME,
     CliValues,
     ConfigError,
     NotAGitRepoError,
+    RunOptions,
     project_settings,
     resolve_options,
 )
 from caecilia_harness.security import keys
+from caecilia_harness.security.env import AGENT_PROVIDERS
 from caecilia_harness.store.info import sqlite_supported, sqlite_version
+from caecilia_harness.workers.external.profile import (
+    AgentProfileError,
+    detect_agent,
+    profile_for,
+)
 
 Level = Literal["ok", "warn", "fail"]
 
@@ -96,8 +104,65 @@ def check_on_path() -> Check:
     )
 
 
+def _agent_checks(options: RunOptions) -> list[Check]:
+    """One line per configured agent: found, version, compatible; login is checked on first run."""
+    names = sorted(set(options.agents))
+    if options.worker in AGENT_NAMES:
+        names = sorted({*names, options.worker})
+    checks: list[Check] = []
+    for name in names:
+        config = options.agents.get(name)
+        try:
+            profile = profile_for(
+                name,
+                auth=config.auth if config is not None else None,
+                model=config.model if config is not None else None,
+                extra_args=tuple(config.extra_args) if config is not None else (),
+            )
+        except AgentProfileError as exc:
+            checks.append(Check("agent", "fail", f"{name}: {exc}"))
+            continue
+        detection = detect_agent(profile)
+        if not detection.found:
+            checks.append(
+                Check(
+                    "agent",
+                    "fail",
+                    f"{name}: tidak ditemukan di PATH (program {profile.binary!r}; "
+                    f"terms: {profile.terms_url or '-'})",
+                )
+            )
+            continue
+        version = detection.version or "tidak terbaca"
+        cocok = "cocok" if detection.compatible else f"tidak cocok (butuh >= {profile.min_version})"
+        checks.append(
+            Check(
+                "agent",
+                "ok" if detection.compatible else "fail",
+                f"{name}: ditemukan di {detection.path}, versi {version}, {cocok}; "
+                "login dicek saat run pertama",
+            )
+        )
+        if profile.auth == "api-key":
+            provider = AGENT_PROVIDERS.get(name)
+            if provider is None:
+                checks.append(Check("api-key", "fail", f"{name}: tidak mendukung API key"))
+                continue
+            source = keys.key_source(provider)
+            checks.append(
+                Check(
+                    "api-key",
+                    "ok" if source else "warn",
+                    f"key {provider} ada ({source})"
+                    if source
+                    else f"key {provider} tidak ada: `caecilia key set {provider}`",
+                )
+            )
+    return checks
+
+
 def check_project(cwd: Path) -> list[Check]:
-    """`.caecilia.toml` of the working folder's repo, and the API key its provider needs."""
+    """`.caecilia.toml` of the working folder's repo, its API key and configured agents."""
     try:
         root, config = project_settings(cwd)
     except NotAGitRepoError:
@@ -116,15 +181,19 @@ def check_project(cwd: Path) -> list[Check]:
         options = resolve_options(CliValues(), config)
     except ValueError as exc:
         return [Check("config", "fail", str(exc))]
-    if options.worker != "native":
-        return [*checks, Check("api-key", "ok", f"tidak dibutuhkan (worker {options.worker})")]
-    source = keys.key_source(options.provider)
-    if source is None:
-        detail = (
-            f"key {options.provider} tidak ada: simpan dengan `caecilia key set {options.provider}`"
-        )
-        return [*checks, Check("api-key", "warn", detail)]
-    return [*checks, Check("api-key", "ok", f"key {options.provider} ada ({source})")]
+    if options.worker == "fake":
+        checks.append(Check("api-key", "ok", f"tidak dibutuhkan (worker {options.worker})"))
+    elif options.worker == "native":
+        source = keys.key_source(options.provider)
+        if source is None:
+            detail = (
+                f"key {options.provider} tidak ada: "
+                f"simpan dengan `caecilia key set {options.provider}`"
+            )
+            checks.append(Check("api-key", "warn", detail))
+        else:
+            checks.append(Check("api-key", "ok", f"key {options.provider} ada ({source})"))
+    return [*checks, *_agent_checks(options)]
 
 
 def run_all(cwd: Path | None = None) -> list[Check]:

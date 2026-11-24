@@ -84,10 +84,10 @@ class Session:
     # --- plans -----------------------------------------------------------------------------
 
     async def propose(self, goal: str) -> Plan:
-        """A plan for `goal`: from the planner model, or one task when the worker is fake."""
+        """A plan for `goal`: from the planner model, or one task for an offline fake worker."""
         if not goal.strip():
             raise AppError("goal tidak boleh kosong")
-        if self.options.worker == "fake":
+        if self.options.worker in ("fake", "fake-agent"):
             plan, usage = single_task_plan(goal.strip()), Usage()
         else:
             if not self.options.model:
@@ -149,6 +149,7 @@ class Session:
             max_parallel=self.options.max_parallel,
             provider_slots=self.options.provider_slots,
             exec_slots=self.options.exec_slots,
+            agents=self.options.agents,
         )
 
     async def resume(self, run_id: str | None = None) -> PreparedRun:
