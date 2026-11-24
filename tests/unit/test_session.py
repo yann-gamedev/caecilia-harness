@@ -148,7 +148,7 @@ async def test_edited_plan_is_validated_and_a_broken_one_keeps_the_old(
     assert [t.id for t in session.replace_plan(edited).tasks] == ["renamed"]
     with pytest.raises(PlanError):
         session.replace_plan("version = 1\n[[task]]\nid = 'a'\n")
-    assert [t.id for t in session._plan().tasks] == ["renamed"]
+    assert [t.id for t in session.require_plan().tasks] == ["renamed"]
     assert original is not session.last_plan
 
 

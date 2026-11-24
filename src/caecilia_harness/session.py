@@ -112,7 +112,7 @@ class Session:
         return self.last_plan
 
     def plan_text(self) -> str:
-        return dump_plan(self._plan())
+        return dump_plan(self.require_plan())
 
     def save(self, path: Path, force: bool = False) -> Path:
         """Write the last plan to `path` (the only time the session writes a plan file)."""
@@ -123,7 +123,7 @@ class Session:
         path.write_text(text, encoding="utf-8", newline="\n")
         return path
 
-    def _plan(self) -> Plan:
+    def require_plan(self) -> Plan:
         if self.last_plan is None:
             raise AppError("belum ada plan: ketik goal, `/plan <goal>`, atau `/run <file>`")
         return self.last_plan
@@ -132,7 +132,7 @@ class Session:
 
     async def start(self, plan: Plan | None = None) -> PreparedRun:
         """Create a run from `plan` (default: the last plan). Always `close()` the result."""
-        chosen = plan or self._plan()
+        chosen = plan or self.require_plan()
         check = self.options.require_check()
         if self.options.worker == "native" and not self.options.model:
             raise MissingOptionError("--model", "model", "wajib untuk worker native")
