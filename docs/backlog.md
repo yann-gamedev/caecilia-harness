@@ -126,7 +126,7 @@ Boleh dikerjakan sebelum M3 selesai; tidak bergantung pada konteks bersama.
 | CLI-02 | Sesi interaktif mode baris (`caecilia`) + mode skrip (`caecilia -p`) | [31](prompts/31-sesi-interaktif.md) | CLI-01 |
 
 - [x] CLI-01
-- [ ] CLI-02
+- [x] CLI-02
 
 ## Agent eksternal dan efisiensi token (ADR-0018, ADR-0019) — prioritas berikutnya
 
@@ -249,3 +249,4 @@ Bug yang sudah terlihat tetapi belum diketahui penyebabnya. Kalau muncul lagi, s
 - 2026-11-23 — ADR-0015: `caecilia` jadi perintah global dengan sesi interaktif dan mode `-p`; GUI desktop pasti dibangun. Prompt 30–35 ditambahkan (CLI-01/02, M7-01/02, M8-01/02); keputusan D13 dibuka.
 - 2026-11-24 — CLI-01 selesai: `caecilia` bisa dipasang global (`uv tool install --editable .`), repo default dari folder kerja, `.caecilia.toml` dengan prioritas CLI → config → default (field rahasia ditolak), `caecilia init`, `--version`/`-V`, cek doctor `path`/`config`/`api-key`; `status`/`resume` per repo; gate mengabaikan file untracked.
 - 2026-11-24 — Reverse engineering Orca (`docs/research/orca.md`). ADR-0018 (worker dari agent CLI resmi, termasuk langganan) dan ADR-0019 (efisiensi token). Prompt 36–43 ditambahkan (EXT-01..06, TOK-01, E2E-01); keputusan D14 dibuka; D1 diperbarui.
+- 2026-11-24 — CLI-02 selesai: `Session` (logika sesi bersama di luar `interfaces/`), sesi interaktif `caecilia` dengan slash command, plan/edit/konfirmasi, Ctrl+C kembali ke prompt, riwayat di `CAECILIA_HOME/history`; mode skrip `caecilia -p` dengan `--allow-cmd`/`allow_commands`, `--output-format json`, dan exit code 0/1/2.
